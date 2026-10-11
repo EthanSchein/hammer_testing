@@ -16,7 +16,7 @@ field):
          ``$AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`` or else ``airflow.cfg``
          (the same connection string Airflow uses for its metadata DB)
     3. Hardcoded defaults
-         host=localhost, port=5433,
+         host=localhost, port=5544,
          db=sledgehammer_studio, user=$USER
        There is no default password: if none resolves from the env or
        airflow.cfg, connecting raises rather than trying without one.
@@ -308,7 +308,7 @@ def _pg_settings() -> Dict[str, Any]:
     port = int(
         os.environ.get("HAMMER_PG_PORT")
         or cfg.get("port")
-        or 5433
+        or 5544
     )
     dbname = (
         os.environ.get("HAMMER_PG_DB")

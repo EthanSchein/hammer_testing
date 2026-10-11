@@ -16,8 +16,8 @@ fi
 
 read -rp "  Postgres user [$USER]: " PG_USER; PG_USER="${PG_USER:-$USER}"
 read -rp "  Postgres db [airflow_$USER]: " PG_DB; PG_DB="${PG_DB:-airflow_$USER}"
-read -rp "  Postgres host [barney.eecs.berkeley.edu]: " PG_HOST; PG_HOST="${PG_HOST:-barney.eecs.berkeley.edu}"
-read -rp "  Postgres port [5433]: " PG_PORT; PG_PORT="${PG_PORT:-5433}"
+read -rp "  Postgres host [localhost]: " PG_HOST; PG_HOST="${PG_HOST:-localhost}"
+read -rp "  Postgres port [5544]: " PG_PORT; PG_PORT="${PG_PORT:-5544}"
 while :; do
     read -rsp "  Postgres password: " PG_PASS; echo
     read -rsp "  confirm password: " PG_PASS2; echo
