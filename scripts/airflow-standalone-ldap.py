@@ -248,6 +248,33 @@ def _setup_secrets() -> None:
     print(f"[secrets] loaded {loaded} secret(s) into the environment.")
 
 
+def _start_local_postgres() -> None:
+    """Start the Postgres that sledge-local-postgres.sh made when the Airflow conn is on this host and it is stopped."""
+    from urllib.parse import urlparse
+    try:
+        url = urlparse(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""))
+        host = url.hostname
+    except ValueError:
+        return
+    if not url.scheme.startswith("postgres") or host not in ("localhost", "127.0.0.1", "::1"):
+        return
+    root = os.environ.get("SLEDGE_PG_DIR") or os.path.join(os.path.expanduser("~"), ".sledgehammer", "postgres")
+    if not os.path.isfile(os.path.join(root, "data", "PG_VERSION")):
+        return
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sledge-local-postgres.sh")
+    res = subprocess.run(["bash", script, "status"], capture_output=True, text=True)
+    if res.returncode == 0:
+        return
+    if res.returncode == 3:
+        res = subprocess.run(["bash", script, "start"], capture_output=True, text=True)
+        if res.returncode == 0:
+            print(f"[postgres] started your local Postgres in {root}")
+            return
+    lines = (res.stderr or res.stdout).strip().splitlines()
+    print(f"[postgres] WARNING: could not start your local Postgres in {root}: "
+          f"{lines[-1] if lines else 'no output'}")
+
+
 def _mirror_metadata_conn_for_callbacks() -> None:
     """Stage the metadata-DB connection in a file DAG callbacks can read.
 
@@ -359,6 +386,7 @@ _pin_airflow_home()
 _default_2fa()
 _default_pd_cache()
 _setup_secrets()
+_start_local_postgres()
 _load_smtp_settings()
 _mirror_metadata_conn_for_callbacks()
 _default_cache_db()

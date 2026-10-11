@@ -20,6 +20,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
+# The local Postgres step may install Postgres with conda, which the cleanup below takes off PATH.
+_path_before_cleanup="${PATH:-}"
 
 _lab="${SLEDGE_LAB:-}"
 _no_ldap="${SLEDGE_NO_LDAP:-}"
@@ -349,6 +351,33 @@ if grep -qF "$_venv_bin" "$HOME/.bashrc" 2>/dev/null; then
 else
     printf '\n# hammer-vlsi (SledgeHammer). Appended on purpose; see scripts/uv_setup.sh.\nexport PATH="$PATH:%s"\n' "$_venv_bin" >> "$HOME/.bashrc"
     echo "  added to ~/.bashrc"
+fi
+fi
+
+if [ -z "$_lab" ]; then
+step "local Postgres (Airflow's database and the cache)"
+if [ -f "$SECRETS_FILE" ]; then
+    echo "  skipped: $SECRETS_FILE already names a Postgres"
+elif [ ! -t 0 ]; then
+    echo "  no tty, skipping. Create one later: ./scripts/sledge-local-postgres.sh"
+else
+    read -rp "  set up a local Postgres for SledgeHammer now? [Y/n]: " DO_LOCAL_PG
+    case "${DO_LOCAL_PG,,}" in
+        n|no)
+            echo "  skipped. Create one later: ./scripts/sledge-local-postgres.sh"
+            ;;
+        *)
+            if PATH="$PATH:$_path_before_cleanup" "$REPO/scripts/sledge-local-postgres.sh" setup; then
+                while IFS='=' read -r _k _v; do
+                    case "$_k" in
+                        SLEDGE_PG_DIR|SLEDGE_PG_HOST|SLEDGE_PG_PORT|SLEDGE_PG_USER|SLEDGE_PG_DB|SLEDGE_PG_PASSWORD_FILE) export "$_k=$_v" ;;
+                    esac
+                done < <("$REPO/scripts/sledge-local-postgres.sh" env)
+            else
+                echo "  the local Postgres setup did not finish; the secrets step below asks which Postgres to use."
+            fi
+            ;;
+    esac
 fi
 fi
 
