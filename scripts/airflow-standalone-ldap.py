@@ -169,6 +169,13 @@ def _start_pgadmin() -> None:
     #   pkill -f pgadmin4   (or kill the pid printed above)
 
 
+def _secrets_path() -> str:
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.expanduser(
+        os.environ.get("SLEDGE_SECRETS_FILE",
+                       os.path.join(repo, ".sledgehammer", "airflow-secrets.env.gpg")))
+
+
 def _setup_secrets() -> None:
     """Decrypt the GPG secrets file and load its KEY=VALUE lines as env vars.
 
@@ -177,10 +184,7 @@ def _setup_secrets() -> None:
     in memory, so Airflow reads them instead of the blank cfg. Each checkout
     keeps its own secrets; create them with scripts/sledge-secrets-create.sh.
     """
-    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    enc = os.path.expanduser(
-        os.environ.get("SLEDGE_SECRETS_FILE",
-                       os.path.join(repo, ".sledgehammer", "airflow-secrets.env.gpg")))
+    enc = _secrets_path()
 
     # reuse-already-loaded secrets: if venv.sh (or a prior step) already decrypted
     # and exported them into this environment, don't decrypt again -- that second
@@ -246,6 +250,20 @@ def _setup_secrets() -> None:
     if not loaded:
         sys.exit(f"[secrets] ERROR: {enc} decrypted to no KEY=VALUE lines.")
     print(f"[secrets] loaded {loaded} secret(s) into the environment.")
+
+
+def _load_postgres_target() -> None:
+    """Take the cache database and the local Postgres directory from the postgres.env that `sledgehammer postgres` writes beside the secrets."""
+    try:
+        from hammer.vlsi import pd_store
+        target = pd_store.postgres_target(pd_store.postgres_target_file(_secrets_path()))
+    except Exception as e:
+        print(f"[secrets] WARNING: could not read the Postgres settings beside the secrets: {e}")
+        return
+    if target.get("HAMMER_PG_DB"):
+        os.environ.setdefault("HAMMER_PG_DB", target["HAMMER_PG_DB"])
+    if target.get("SLEDGE_PG_DIR"):
+        os.environ["SLEDGE_PG_DIR"] = target["SLEDGE_PG_DIR"]
 
 
 def _start_local_postgres() -> None:
@@ -386,6 +404,7 @@ _pin_airflow_home()
 _default_2fa()
 _default_pd_cache()
 _setup_secrets()
+_load_postgres_target()
 _start_local_postgres()
 _load_smtp_settings()
 _mirror_metadata_conn_for_callbacks()

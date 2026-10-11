@@ -13,11 +13,14 @@ field):
          HAMMER_PG_HOST / HAMMER_PG_PORT / HAMMER_PG_DB /
          HAMMER_PG_USER / HAMMER_PG_PASSWORD
     2. Airflow's ``sql_alchemy_conn``, from
-         ``$AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`` or else ``airflow.cfg``
+         ``$AIRFLOW__DATABASE__SQL_ALCHEMY_CONN``, else ``postgres.env``
+         beside the secrets file (host, port and user, as written by
+         ``sledgehammer postgres``), else ``airflow.cfg``
          (the same connection string Airflow uses for its metadata DB)
     3. Hardcoded defaults
          host=localhost, port=5544,
-         db=sledgehammer_studio, user=$USER
+         db=sledgehammer_studio (HAMMER_PG_DB in ``postgres.env`` wins),
+         user=$USER
        There is no default password: if none resolves from the env or
        airflow.cfg, connecting raises rather than trying without one.
 
@@ -50,8 +53,8 @@ import stat
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import unquote, urlparse
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
+from urllib.parse import unquote
 
 try:
     import psycopg2
@@ -173,36 +176,32 @@ def _find_airflow_cfg() -> Optional[Path]:
     return None
 
 
+# The password runs to the first @ that leaves a valid host, so a raw / ? # or @ in it still parses.
+_CONN_URI = re.compile(r"(?P<scheme>[\w+]+)://(?:(?P<user>[^:/]*)(?::(?P<password>.*?))?@)??"
+                       r"(?P<host>\[[^\]]*\]|[^/:?@\[\]]*)(?::(?P<port>\d*))?(?:/(?P<dbname>[^?@]*))?(?:\?.*)?\Z",
+                       re.S)
+
+
 def _parse_conn_uri(conn_str: str) -> Dict[str, Any]:
     """Parse a SQLAlchemy/libpq Postgres URI into psycopg2 connect kwargs.
 
     Returns an empty dict for anything that isn't a usable postgres URI.
     """
-    if not conn_str:
-        return {}
-    # Strip SQLAlchemy driver prefix (e.g. "postgresql+psycopg2://") so
-    # urlparse sees a recognized scheme.
-    if "+" in conn_str.split("://", 1)[0]:
-        scheme, rest = conn_str.split("://", 1)
-        conn_str = scheme.split("+", 1)[0] + "://" + rest
-    try:
-        url = urlparse(conn_str)
-    except Exception:
-        return {}
-    if url.scheme not in ("postgres", "postgresql"):
+    url = _CONN_URI.match((conn_str or "").strip())
+    if url is None or url.group("scheme").split("+", 1)[0] not in ("postgres", "postgresql"):
         return {}
     out: Dict[str, Any] = {}
-    if url.hostname:
-        out["host"] = url.hostname
-    if url.port:
-        out["port"] = url.port
-    if url.username:
-        out["user"] = unquote(url.username)
-    if url.password:
-        out["password"] = unquote(url.password)
-    dbname = url.path.lstrip("/") if url.path else ""
-    if dbname:
-        out["dbname"] = dbname
+    host = url.group("host").strip("[]").lower()
+    if host:
+        out["host"] = host
+    if url.group("port") and int(url.group("port")):
+        out["port"] = int(url.group("port"))
+    if url.group("user"):
+        out["user"] = unquote(url.group("user"))
+    if url.group("password"):
+        out["password"] = unquote(url.group("password"))
+    if url.group("dbname"):
+        out["dbname"] = url.group("dbname")
     return out
 
 
@@ -284,54 +283,87 @@ def export_conn_defaults() -> None:
             os.environ.setdefault(var, str(settings[field]))
 
 
-def _pg_settings() -> Dict[str, Any]:
+SECRETS_FILE = str(Path(__file__).resolve().parents[2] / ".sledgehammer" / "airflow-secrets.env.gpg")
+
+_PG_VARS = (("host", "HAMMER_PG_HOST"), ("port", "HAMMER_PG_PORT"), ("dbname", "HAMMER_PG_DB"),
+            ("user", "HAMMER_PG_USER"), ("password", "HAMMER_PG_PASSWORD"))
+
+
+def secrets_file(environ: Optional[Mapping[str, str]] = None) -> str:
+    """The encrypted secrets: $SLEDGE_SECRETS_FILE, else .sledgehammer/airflow-secrets.env.gpg in this checkout."""
+    environ = os.environ if environ is None else environ
+    return os.path.expanduser(environ.get("SLEDGE_SECRETS_FILE") or SECRETS_FILE)
+
+
+def postgres_target_file(secrets: Optional[str] = None) -> str:
+    """postgres.env beside the secrets, where `sledgehammer postgres` keeps the host, port, user and cache database it chose."""
+    return os.path.join(os.path.dirname(secrets or secrets_file()), "postgres.env")
+
+
+def postgres_target(path: Optional[str] = None) -> Dict[str, str]:
+    """The KEY=value lines of postgres_target_file(), or {} when it cannot be read."""
+    out: Dict[str, str] = {}
+    try:
+        with open(path or postgres_target_file()) as f:
+            for raw in f:
+                line = raw.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    out[key.strip()] = value.strip()
+    except (OSError, UnicodeDecodeError):
+        pass
+    return out
+
+
+def pg_fields(environ: Optional[Mapping[str, str]] = None,
+              target: Optional[Dict[str, str]] = None) -> Dict[str, Tuple[Any, str]]:
+    """Each cache connection field as (value, source), the source being env, conn, target, cfg or default."""
+    environ = os.environ if environ is None else environ
+    if target is None:
+        target = postgres_target(postgres_target_file(secrets_file(environ)))
+    fallback, source = _parse_conn_uri(environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")), "conn"
+    if not fallback:
+        fallback = {field: target[var] for field, var in _PG_VARS
+                    if field in ("host", "port", "user") and target.get(var)}
+        source = "target"
+    if not fallback:
+        fallback, source = _parse_airflow_cfg_conn(), "cfg"
+    try:
+        default_user = getpass.getuser()
+    except Exception:
+        default_user = "postgres"
+    defaults = {"host": "localhost", "port": 5544, "dbname": "sledgehammer_studio", "user": default_user}
+    fields: Dict[str, Tuple[Any, str]] = {}
+    for field, var in _PG_VARS:
+        if environ.get(var):
+            fields[field] = (environ[var], "env")
+        elif field == "dbname" and target.get(var):
+            fields[field] = (target[var], "target")
+        elif field != "dbname" and fallback.get(field):
+            fields[field] = (fallback[field], source)
+        elif field in defaults:
+            fields[field] = (defaults[field], "default")
+    fields["port"] = (int(fields["port"][0]), fields["port"][1])
+    return fields
+
+
+def _pg_settings(environ: Optional[Mapping[str, str]] = None,
+                 target: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
     Gather Postgres connection settings.
 
     Precedence (first hit wins per field):
         1. HAMMER_PG_* environment variables
-        2. Airflow's sql_alchemy_conn, from $AIRFLOW__DATABASE__SQL_ALCHEMY_CONN or else airflow.cfg
-        3. Hardcoded defaults
+        2. Airflow's sql_alchemy_conn, from $AIRFLOW__DATABASE__SQL_ALCHEMY_CONN, else postgres.env
+           beside the secrets, else airflow.cfg
+        3. Hardcoded defaults (the database: postgres.env's HAMMER_PG_DB, else sledgehammer_studio)
         4. Password only: libpq's own PGPASSWORD or pgpass file ($PGPASSFILE, else ~/.pgpass)
     """
-    cfg = _parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")) or _parse_airflow_cfg_conn()
-    try:
-        default_user = getpass.getuser()
-    except Exception:
-        default_user = "postgres"
-
-    host = (
-        os.environ.get("HAMMER_PG_HOST")
-        or cfg.get("host")
-        or "localhost"
-    )
-    port = int(
-        os.environ.get("HAMMER_PG_PORT")
-        or cfg.get("port")
-        or 5544
-    )
-    dbname = (
-        os.environ.get("HAMMER_PG_DB")
-        or "sledgehammer_studio"  # default to the dedicated cache db; override via env
-    )
-    user = (
-        os.environ.get("HAMMER_PG_USER")
-        or cfg.get("user")
-        or default_user
-    )
-    password = (
-        os.environ.get("HAMMER_PG_PASSWORD")
-        or cfg.get("password")
-    )
-    settings: Dict[str, Any] = {
-        "host": host,
-        "port": port,
-        "dbname": dbname,
-        "user": user,
-        "connect_timeout": _connect_timeout(),
-    }
-    if password:
-        settings["password"] = password
+    fields = pg_fields(environ, target)
+    settings: Dict[str, Any] = {field: fields[field][0] for field in ("host", "port", "dbname", "user")}
+    settings["connect_timeout"] = _connect_timeout()
+    if "password" in fields:
+        settings["password"] = fields["password"][0]
         return settings
     if os.environ.get("PGPASSWORD"):
         return settings

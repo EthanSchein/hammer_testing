@@ -102,7 +102,7 @@ def test_postgres_installs_through_a_package_manager_the_cleanup_took_off_path(t
 def test_no_leaves_the_secrets_prompts_as_they_were(tmp_path, tools) -> None:
     pg_bin = fake_postgres.postgres(tmp_path / "pgbin", tmp_path / "calls.log")
     out, written, log, root = _install(tmp_path, tools, extra_path=(pg_bin,), answers="n\n\n\n\n\n\npw\npw\n")
-    assert "skipped. Create one later: ./scripts/sledge-local-postgres.sh" in out
+    assert "skipped. Create one later: sledgehammer postgres use local" in out
     assert fake_postgres.calls(log, "initdb") == []
     assert written["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"] == \
         "postgresql+psycopg2://alice:pw@localhost:5544/airflow_alice"

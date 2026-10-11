@@ -34,6 +34,12 @@ Flow commands -- hammer's flags, the DAG as plumbing, no GUI required:
   sledgehammer status --design Top          latest run, per-task table
   sledgehammer runs --design Top            recent runs
 
+Which Postgres Airflow and the cache use:
+
+  sledgehammer postgres show        where each points, and whether it answers
+  sledgehammer postgres use local   switch both to your own local Postgres
+  sledgehammer postgres configure   switch both to any other Postgres
+
 Set SLEDGE_DRYRUN=1 to print what it would run instead of running it.
 """
 import json
@@ -530,6 +536,10 @@ def _cmd_status(args, list_only=False) -> int:
 def main() -> int:
     args = sys.argv[1:]
     sub = args[0] if args else ""
+
+    if sub == "postgres":
+        from hammer.shell import sledgehammer_postgres
+        return sledgehammer_postgres.main(args[1:])
 
     # Flow commands compose with an existing stack (stack_env, iris-db, ...):
     # respect AIRFLOW_HOME when the caller set one, default to the checkout.

@@ -58,3 +58,11 @@ def _no_developer_stack_env(monkeypatch):
     monkeypatch.delenv("SLEDGE_ENV_FILE", raising=False)
     monkeypatch.setattr(sledgehammer_cli, "_find_stack_env",
                         lambda: os.environ.get("SLEDGE_ENV_FILE") if os.path.isfile(os.environ.get("SLEDGE_ENV_FILE", "")) else None)
+
+
+@pytest.fixture(autouse=True)
+def _no_developer_postgres_target(tmp_path_factory, monkeypatch):
+    """Keep this checkout's own .sledgehammer/postgres.env out of the code under test."""
+    from hammer.vlsi import pd_store
+    monkeypatch.setattr(pd_store, "SECRETS_FILE",
+                        str(tmp_path_factory.getbasetemp() / "no-checkout-secrets" / "airflow-secrets.env.gpg"))

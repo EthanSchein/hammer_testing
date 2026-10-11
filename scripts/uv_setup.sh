@@ -364,7 +364,7 @@ else
     read -rp "  set up a local Postgres for SledgeHammer now? [Y/n]: " DO_LOCAL_PG
     case "${DO_LOCAL_PG,,}" in
         n|no)
-            echo "  skipped. Create one later: ./scripts/sledge-local-postgres.sh"
+            echo "  skipped. Create one later: sledgehammer postgres use local"
             ;;
         *)
             if PATH="$PATH:$_path_before_cleanup" "$REPO/scripts/sledge-local-postgres.sh" setup; then

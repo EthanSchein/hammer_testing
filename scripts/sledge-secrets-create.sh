@@ -46,16 +46,39 @@ FERNET="$("$PY" -c 'from cryptography.fernet import Fernet;print(Fernet.generate
 # secret_key must equal internal_api_secret_key or task auth fails
 APIKEY="$("$PY" -c 'import secrets,base64;print(base64.b64encode(secrets.token_bytes(32)).decode())')"
 JWT="$("$PY" -c 'import secrets,base64;print(base64.b64encode(secrets.token_bytes(32)).decode())')"
+urlquote() {
+    local LC_ALL=C s="$1" out="" c i
+    for ((i = 0; i < ${#s}; i++)); do
+        c="${s:i:1}"
+        case "$c" in
+            [A-Za-z0-9._~-]) out+="$c" ;;
+            *) printf -v c '%%%02X' "'$c"; out+="$c" ;;
+        esac
+    done
+    printf '%s' "$out"
+}
+# The secrets loaders strip whitespace and one pair of quotes around a value.
+envvalue() {
+    case "$1" in
+        [\"\'[:space:]]*|*[\"\'[:space:]]) printf "'%s'" "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+case "$PG_HOST" in
+    \[*) CONN_HOST="$PG_HOST" ;;
+    *:*) CONN_HOST="[$PG_HOST]" ;;
+    *) CONN_HOST="$PG_HOST" ;;
+esac
 mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
 tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
 trap 'shred -u "$tmp" 2>/dev/null || rm -f "$tmp"' EXIT
 {
-  echo "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${PG_USER}:${PG_PASS}@${PG_HOST}:${PG_PORT}/${PG_DB}"
+  echo "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://$(urlquote "$PG_USER"):$(urlquote "$PG_PASS")@${CONN_HOST}:${PG_PORT}/${PG_DB}"
   echo "AIRFLOW__CORE__FERNET_KEY=${FERNET}"
   echo "AIRFLOW__CORE__INTERNAL_API_SECRET_KEY=${APIKEY}"
   echo "AIRFLOW__API__SECRET_KEY=${APIKEY}"
   echo "AIRFLOW__API_AUTH__JWT_SECRET=${JWT}"
-  echo "HAMMER_PG_PASSWORD=${PG_PASS}"
+  echo "HAMMER_PG_PASSWORD=$(envvalue "$PG_PASS")"
   [ -z "${SLEDGE_PG_DIR:-}" ] || echo "SLEDGE_PG_DIR=${SLEDGE_PG_DIR}"
 } > "$tmp"
 echo "  choose a passphrase to encrypt your secrets:"
