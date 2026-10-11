@@ -12,7 +12,8 @@ field):
     1. HAMMER_PG_* environment variables
          HAMMER_PG_HOST / HAMMER_PG_PORT / HAMMER_PG_DB /
          HAMMER_PG_USER / HAMMER_PG_PASSWORD
-    2. ``sql_alchemy_conn`` from ``airflow.cfg``
+    2. Airflow's ``sql_alchemy_conn``, from
+         ``$AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`` or else ``airflow.cfg``
          (the same connection string Airflow uses for its metadata DB)
     3. Hardcoded defaults
          host=localhost, port=5433,
@@ -275,17 +276,25 @@ def airflow_metadata_conn_settings() -> Dict[str, Any]:
     return _parse_airflow_cfg_conn()
 
 
+def export_conn_defaults() -> None:
+    """Copy host, port and user from the Airflow conn into unset HAMMER_PG_* vars, which DAG tasks inherit though they lose the conn itself."""
+    settings = _parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""))
+    for field, var in (("host", "HAMMER_PG_HOST"), ("port", "HAMMER_PG_PORT"), ("user", "HAMMER_PG_USER")):
+        if field in settings:
+            os.environ.setdefault(var, str(settings[field]))
+
+
 def _pg_settings() -> Dict[str, Any]:
     """
     Gather Postgres connection settings.
 
     Precedence (first hit wins per field):
         1. HAMMER_PG_* environment variables
-        2. sql_alchemy_conn from airflow.cfg
+        2. Airflow's sql_alchemy_conn, from $AIRFLOW__DATABASE__SQL_ALCHEMY_CONN or else airflow.cfg
         3. Hardcoded defaults
         4. Password only: libpq's own PGPASSWORD or pgpass file ($PGPASSFILE, else ~/.pgpass)
     """
-    cfg = _parse_airflow_cfg_conn()
+    cfg = _parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")) or _parse_airflow_cfg_conn()
     try:
         default_user = getpass.getuser()
     except Exception:

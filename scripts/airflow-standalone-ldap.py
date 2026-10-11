@@ -342,6 +342,15 @@ def _default_pd_cache() -> None:
     os.environ.setdefault("HAMMER_PD_CACHE", "1")
 
 
+def _default_cache_db() -> None:
+    """Point the PD cache at Airflow's Postgres server unless HAMMER_PG_* already says otherwise."""
+    try:
+        from hammer.vlsi import pd_store
+        pd_store.export_conn_defaults()
+    except Exception as e:
+        print(f"[secrets] WARNING: could not take the cache DB host from the Airflow conn: {e}")
+
+
 # Pin AIRFLOW_HOME first so the right airflow.cfg/webserver_config.py are read,
 # then load secrets, THEN import Airflow: importing it reads sql_alchemy_conn
 # right away, so the environment has to be populated first or it crashes on a
@@ -352,6 +361,7 @@ _default_pd_cache()
 _setup_secrets()
 _load_smtp_settings()
 _mirror_metadata_conn_for_callbacks()
+_default_cache_db()
 
 from airflow.cli.commands.standalone_command import StandaloneCommand
 from airflow.executors.executor_loader import ExecutorLoader
