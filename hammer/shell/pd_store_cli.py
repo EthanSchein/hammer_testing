@@ -607,6 +607,15 @@ def _cmd_make_dag(args: argparse.Namespace) -> int:
     from hammer.vlsi import HammerDriver, HammerDriverOptions
     import hammer.config as hcfg
 
+    # build_system hammer is legacy Hammer run by make, and every task of its DAG would refuse to
+    # run. extra_dict below forces airflow, so ask the design's own configs first.
+    from hammer.vlsi import legacy_hammer
+    if legacy_hammer.is_legacy_hammer_project(proj_confs):
+        print(f"vlsi.core.build_system is hammer for '{design}', which runs plain legacy Hammer driven "
+              f"by make, so no DAG was generated. Run the flow with make, or set "
+              f"vlsi.core.build_system: sledgehammer to build it with a DAG.", file=sys.stderr)
+        return 2
+
     opts = HammerDriverOptions(
         environment_configs=[str(env_conf)],
         project_configs=proj_confs,

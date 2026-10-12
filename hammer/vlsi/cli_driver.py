@@ -26,7 +26,7 @@ from .hammer_vlsi_impl import HammerTool, HammerVLSISettings
 from .hooks import HammerToolHookAction, HammerStartStopStep
 from .driver import HammerDriver, HammerDriverOptions
 from .hammer_build_systems import BuildSystems
-from . import rtl_check, fingerprints
+from . import rtl_check, fingerprints, legacy_hammer
 from . import code_fingerprints  # noqa: F401  importing it snapshots the framework files as this process loaded them
 
 from functools import reduce
@@ -652,6 +652,9 @@ class CLIDriver:
                     key_history = json.load(f)
             except (FileNotFoundError, json.JSONDecodeError):
                 key_history = {}
+            # vlsi.core.build_system: hammer runs the action as upstream Hammer does: no
+            # fingerprints, dependency check, PD cache, resume, error scan, ledger or master database.
+            legacy = legacy_hammer.is_legacy_hammer(driver)
 
             # DESIGN FILES CHECK
             # Ignore comments/whitespace in RTL
@@ -659,7 +662,7 @@ class CLIDriver:
             # can treat RTL changes as dependency changes.
             rtl_include_walk: List[str] = []
             try:
-                if driver.database.has_setting("synthesis.inputs.input_files"):
+                if not legacy and driver.database.has_setting("synthesis.inputs.input_files"):
                     rtl_inputs = list(driver.database.get_setting("synthesis.inputs.input_files", nullvalue=[]))
                     defines = []
                     if driver.database.has_setting("synthesis.inputs.defines"):
@@ -690,7 +693,7 @@ class CLIDriver:
                 driver.log.error(f"Failed to compute RTL fingerprint: {e}")
                 return None
 
-            fingerprint_stage = fingerprints.FINGERPRINT_STAGES.get(action_type)
+            fingerprint_stage = None if legacy else fingerprints.FINGERPRINT_STAGES.get(action_type)
             if fingerprint_stage is not None:
                 try:
                     stage_keys = fingerprints.stage_fingerprints(
@@ -702,7 +705,49 @@ class CLIDriver:
                 for key, value in stage_keys.items():
                     driver.database.set_setting(key, value)
 
-            if action_type == "synthesis" or action_type == "syn":
+            if legacy and (action_type == "synthesis" or action_type == "syn"):
+                # Upstream Hammer's syn: whoever invoked the action decided it should run.
+                if not driver.load_synthesis_tool(get_or_else(self.syn_rundir, "")):
+                    return None
+                else:
+                    post_load_func_checked(driver)
+                assert driver.syn_tool is not None, "load_synthesis_tool was unsuccessful"
+                success, output = driver.run_synthesis(
+                        driver.syn_tool.get_tool_hooks() + \
+                        driver.tech.get_tech_syn_hooks(driver.syn_tool.name) + \
+                        list(extra_hooks or []))
+                if not success:
+                    driver.log.error("Synthesis tool did not succeed")
+                    return None
+                post_run_func_checked(driver)
+                dump_config_to_json_file(os.path.join(driver.syn_tool.run_dir, "syn-output.json"), output)
+                dump_config_to_json_file(os.path.join(driver.syn_tool.run_dir, "syn-output-full.json"),
+                                         self.get_full_config(driver, output))
+                if driver.dump_history:
+                    dump_config_to_yaml_file(os.path.join(driver.syn_tool.run_dir, "syn-output-history.yml"),
+                                            add_key_history(self.get_full_config(driver, output), key_history))
+            elif legacy and action_type == "par":
+                # Upstream Hammer's par.
+                if not driver.load_par_tool(get_or_else(self.par_rundir, "")):
+                    return None
+                else:
+                    post_load_func_checked(driver)
+                assert driver.par_tool is not None, "load_par_tool was unsuccessful"
+                success, output = driver.run_par(
+                        driver.par_tool.get_tool_hooks() + \
+                        driver.tech.get_tech_par_hooks(driver.par_tool.name) + \
+                        list(extra_hooks or []))
+                if not success:
+                    driver.log.error("Place-and-route tool did not succeed")
+                    return None
+                post_run_func_checked(driver)
+                dump_config_to_json_file(os.path.join(driver.par_tool.run_dir, "par-output.json"), output)
+                dump_config_to_json_file(os.path.join(driver.par_tool.run_dir, "par-output-full.json"),
+                                         self.get_full_config(driver, output))
+                if driver.dump_history:
+                    dump_config_to_yaml_file(os.path.join(driver.par_tool.run_dir, "par-output-history.yml"),
+                                            add_key_history(self.get_full_config(driver, output), key_history))
+            elif action_type == "synthesis" or action_type == "syn":
                 print(driver.obj_dir)
                 run_stage = driver.database.stage_change_check(stage = "syn", filename = driver.obj_dir + "/master_database.json", force = self.force_rerun or self._explicit_flow_control)
                 if not run_stage:
@@ -1033,9 +1078,10 @@ class CLIDriver:
                         dump_config_to_yaml_file(os.path.join(driver.par_tool.run_dir, "par-output-history.yml"),
                                                 add_key_history(self.get_full_config(driver, output), key_history))
             elif action_type == "drc":
-                if driver.database.stage_change_check(stage = "drc", filename = driver.obj_dir + "/master_database.json", force = self.force_rerun):
+                if legacy or driver.database.stage_change_check(stage = "drc", filename = driver.obj_dir + "/master_database.json", force = self.force_rerun):
                     if not driver.load_drc_tool(get_or_else(self.drc_rundir, "")):
-                        driver.database.revert_rerun(stage = "drc", filename = driver.obj_dir + "/master_database.json")
+                        if not legacy:
+                            driver.database.revert_rerun(stage = "drc", filename = driver.obj_dir + "/master_database.json")
                         return None
                     else:
                         post_load_func_checked(driver)
@@ -1045,11 +1091,13 @@ class CLIDriver:
                             driver.tech.get_tech_drc_hooks(driver.drc_tool.name) + \
                             list(extra_hooks or []))
                     if not success:
-                        driver.database.revert_rerun(stage = "drc", filename = driver.obj_dir + "/master_database.json")
+                        if not legacy:
+                            driver.database.revert_rerun(stage = "drc", filename = driver.obj_dir + "/master_database.json")
                         driver.log.error("DRC tool did not succeed")
                         return None
                     post_run_func_checked(driver)
-                    driver.database.commit_master_database()
+                    if not legacy:
+                        driver.database.commit_master_database()
                     dump_config_to_json_file(os.path.join(driver.drc_tool.run_dir, "drc-output.json"), output)
                     dump_config_to_json_file(os.path.join(driver.drc_tool.run_dir, "drc-output-full.json"),
                                             self.get_full_config(driver, output))
@@ -1059,9 +1107,10 @@ class CLIDriver:
                 else:
                     return 0
             elif action_type == "lvs":
-                if driver.database.stage_change_check(stage = "lvs", filename = driver.obj_dir + "/master_database.json", force = self.force_rerun):
+                if legacy or driver.database.stage_change_check(stage = "lvs", filename = driver.obj_dir + "/master_database.json", force = self.force_rerun):
                     if not driver.load_lvs_tool(get_or_else(self.lvs_rundir, "")):
-                        driver.database.revert_rerun(stage = "lvs", filename = driver.obj_dir + "/master_database.json")
+                        if not legacy:
+                            driver.database.revert_rerun(stage = "lvs", filename = driver.obj_dir + "/master_database.json")
                         return None
                     else:
                         post_load_func_checked(driver)
@@ -1071,7 +1120,8 @@ class CLIDriver:
                             driver.tech.get_tech_lvs_hooks(driver.lvs_tool.name) + \
                             list(extra_hooks or []))
                     if not success:
-                        driver.database.revert_rerun(stage = "lvs", filename = driver.obj_dir + "/master_database.json")
+                        if not legacy:
+                            driver.database.revert_rerun(stage = "lvs", filename = driver.obj_dir + "/master_database.json")
                         driver.log.error("LVS tool did not succeed")
                         return None
                     # The tool exiting 0 is not a verdict. Calibre writes a
@@ -1079,9 +1129,10 @@ class CLIDriver:
                     # COMPARED (netlist compile failed, comparison never ran);
                     # treating exit 0 as success let runs go green, and email
                     # congratulations, for an LVS that verified nothing.
-                    verdict = _lvs_report_verdict(driver.lvs_tool.run_dir)
+                    # Upstream Hammer has no verdict, so hammer mode keeps the tool's exit status.
+                    verdict = None if legacy else _lvs_report_verdict(driver.lvs_tool.run_dir)
                     report = "lvs_results.rpt"
-                    if verdict is None:
+                    if verdict is None and not legacy:
                         verdict = _pegasus_lvs_verdict(driver.lvs_tool.run_dir, driver.lvs_tool.top_module)
                         report = f"{driver.lvs_tool.top_module}.lvs_results.cls"
                     if verdict in ("NOT COMPARED", "INCORRECT"):
@@ -1095,7 +1146,8 @@ class CLIDriver:
                     if verdict == "CORRECT":
                         driver.log.info("LVS report verdict: CORRECT")
                     post_run_func_checked(driver)
-                    driver.database.commit_master_database()
+                    if not legacy:
+                        driver.database.commit_master_database()
                     dump_config_to_json_file(os.path.join(driver.lvs_tool.run_dir, "lvs-output.json"), output)
                     dump_config_to_json_file(os.path.join(driver.lvs_tool.run_dir, "lvs-output-full.json"),
                                             self.get_full_config(driver, output))
@@ -1118,7 +1170,8 @@ class CLIDriver:
                     driver.log.error("SRAM generator tool did not succeed")
                     return None
                 post_run_func_checked(driver)
-                driver.database.commit_master_database()
+                if not legacy:
+                    driver.database.commit_master_database()
             elif action_type == "sim":
                 if not driver.load_sim_tool(get_or_else(self.sim_rundir, "")):
                     return None
@@ -1133,7 +1186,8 @@ class CLIDriver:
                     driver.log.error("Sim tool did not succeed")
                     return None
                 post_run_func_checked(driver)
-                driver.database.commit_master_database()
+                if not legacy:
+                    driver.database.commit_master_database()
                 dump_config_to_json_file(os.path.join(driver.sim_tool.run_dir, "sim-output.json"), output)
                 dump_config_to_json_file(os.path.join(driver.sim_tool.run_dir, "sim-output-full.json"),
                                          self.get_full_config(driver, output))
@@ -1154,7 +1208,8 @@ class CLIDriver:
                     driver.log.error("Power tool did not succeed")
                     return None
                 post_run_func_checked(driver)
-                driver.database.commit_master_database()
+                if not legacy:
+                    driver.database.commit_master_database()
                 dump_config_to_json_file(os.path.join(driver.power_tool.run_dir, "power-output.json"), output)
                 dump_config_to_json_file(os.path.join(driver.power_tool.run_dir, "power-output-full.json"),
                                          self.get_full_config(driver, output))
@@ -1175,7 +1230,8 @@ class CLIDriver:
                     driver.log.error("Formal tool did not succeed")
                     return None
                 post_run_func_checked(driver)
-                driver.database.commit_master_database()
+                if not legacy:
+                    driver.database.commit_master_database()
                 dump_config_to_json_file(os.path.join(driver.formal_tool.run_dir, "formal-output.json"), output)
                 dump_config_to_json_file(os.path.join(driver.formal_tool.run_dir, "formal-output-full.json"),
                                          self.get_full_config(driver, output))
@@ -1196,7 +1252,8 @@ class CLIDriver:
                     driver.log.error("Timing tool did not succeed")
                     return None
                 post_run_func_checked(driver)
-                driver.database.commit_master_database()
+                if not legacy:
+                    driver.database.commit_master_database()
                 dump_config_to_json_file(os.path.join(driver.timing_tool.run_dir, "timing-output.json"), output)
                 dump_config_to_json_file(os.path.join(driver.timing_tool.run_dir, "timing-output-full.json"),
                                          self.get_full_config(driver, output))
@@ -1214,7 +1271,8 @@ class CLIDriver:
                     driver.log.error("PCB deliverable tool did not succeed")
                     return None
                 post_run_func_checked(driver)
-                driver.database.commit_master_database()
+                if not legacy:
+                    driver.database.commit_master_database()
                 dump_config_to_json_file(os.path.join(driver.pcb_tool.run_dir, "pcb-output.json"), output)
                 dump_config_to_json_file(os.path.join(driver.pcb_tool.run_dir, "pcb-output-full.json"),
                                          self.get_full_config(driver, output))
@@ -1374,13 +1432,14 @@ class CLIDriver:
 
                 # Also store the par-input artifact in Postgres, keyed by SHA256
                 # of its canonical JSON. Non-fatal on failure so a DB outage can't
-                # break a real syn -> par run.
-                try:
-                    from hammer.vlsi.pd_store import store_par_input
-                    sha = store_par_input(par_input)
-                    driver.log.info(f"Stored par-input in Postgres with sha256={sha}")
-                except Exception as e:
-                    driver.log.warning(f"Failed to store par-input in Postgres (POC, non-fatal): {e}")
+                # break a real syn -> par run. Legacy Hammer has no Postgres.
+                if not legacy_hammer.is_legacy_hammer(driver):
+                    try:
+                        from hammer.vlsi.pd_store import store_par_input
+                        sha = store_par_input(par_input)
+                        driver.log.info(f"Stored par-input in Postgres with sha256={sha}")
+                    except Exception as e:
+                        driver.log.warning(f"Failed to store par-input in Postgres (POC, non-fatal): {e}")
 
                 # Use new par input and run place-and-route.
                 driver.update_project_configs([par_input])
@@ -2132,12 +2191,24 @@ class CLIDriver:
 
         :return: Return code (0 for success)
         """
+        # build_system hammer forces the SledgeHammer switches in os.environ for this action only, so
+        # an in-process caller (flowgraph, tests) runs its next action with its own values.
+        with legacy_hammer.restored_after():
+            return self._run_main_parsed(args)
+
+    def _run_main_parsed(self, args: dict) -> int:
         #pdb.set_trace()
         if args['firrtl'] is not None and len(args['firrtl']) > 0:
             print("firrtl convenience argument not yet implemented", file=sys.stderr)
             return 1
 
         driver, errors = self.args_to_driver(args)
+        if legacy_hammer.apply(driver) and legacy_hammer.airflow_run_id():
+            print(f"vlsi.core.build_system is hammer, which runs plain legacy Hammer driven by make, so "
+                  f"{args['action']} does not run as a task of Airflow run {legacy_hammer.airflow_run_id()}. "
+                  f"Run it with make, or set vlsi.core.build_system: sledgehammer and run make buildfile "
+                  f"to regenerate the DAG.", file=sys.stderr)
+            return 1
 
         self.force_rerun = bool(args.get('force', False))
         self.force_local = bool(args.get('local', False))

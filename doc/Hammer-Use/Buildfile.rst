@@ -5,6 +5,8 @@ Hammer Buildfile
 
 Hammer natively supports a GNU Make-based build system to manage build dependencies.
 To use this flow, ``vlsi.core.build_system`` must be set to ``make``.
+``hammer`` writes the same ``hammer.d`` and also runs every action as plain legacy Hammer, with all SledgeHammer features (dependency check, PD cache, sub-step resume, error scan, LVS report verdict, time-saved ledger) off.
+Stages after ``syn`` read ``vlsi.core.build_system`` from the stage before them, so after switching to or from ``hammer``, rerun from ``syn`` (``make redo-syn``).
 Hammer will generate a Makefile include in the object directory named ``hammer.d`` after calling the ``build`` action:
 
 .. code-block:: shell

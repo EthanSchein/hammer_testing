@@ -128,6 +128,30 @@ HAMMER_PD_CACHE=0 ./ee290-vlsi ... --force syn
 make redo-syn HAMMER_EXTRA_ARGS='--force'
 ```
 
+Or set `vlsi.core.build_system: hammer` and run `make buildfile`, which gives
+the same baseline from one setting with nothing to pass per run. hammer.d is
+the same as for `make`, and every hammer-vlsi action then runs as upstream
+Hammer: the tool runs each time make invokes it, with no dependency check or
+master_database.json, PD cache, sub-step resume, checkpoint streaming, error
+scan, LVS report verdict, ledger events, fingerprinting or Postgres. Each
+action forces HAMMER_PD_CACHE, HAMMER_PD_CACHE_LEDGER, HAMMER_SUBSTEP_RESUME,
+HAMMER_DB_CHECKPOINTS, HAMMER_CHECKPOINT_STREAM and HAMMER_ERROR_SCAN to 0 (and
+the two fingerprint memos off), whatever was exported, overrides the
+vlsi.pd_cache, vlsi.substep_resume and vlsi.error_scan enables, and prints one
+line saying so. Step flags behave as in upstream Hammer. `make` stays
+mtime-driven, so use `make redo-syn` (or touch an input) to rerun a stage whose
+output is newer than its inputs. The mode is make-driven: a DAG task refuses to
+run in it, and `studio make-dag` will not generate a DAG for it.
+
+Each stage reads the mode from its own input configs, and stages after syn get
+them from the stage before (par-input.json, par-output-full.json, ...) plus any
+project configs make passes after those (the e2e Makefile's HAMMER_EXTRA_ARGS).
+After switching `vlsi.core.build_system` to or from `hammer`, rerun from syn
+(`make redo-syn`, then the later stages) so the new value reaches every stage.
+Switching back to `make` keeps the master_database.json from the earlier make
+runs, so the first make run may skip a stage whose inputs have not changed since
+then; pass `--force` to rerun it (with the e2e Makefile, `make redo-syn args=--force`).
+
 With the cache off, cache_or_run degenerates to a plain tool run, and --force
 short-circuits the dependency check, so the measured wall time is what legacy
 hammer would spend. Time a flow that way, run the same flow with the cache on,

@@ -12,7 +12,11 @@ vlsi.core:
 
   build_system: "none" # Build system to use, if any.
   # This is used to auto-generate a build file, if desired. It is not required to run hammer.
-  # Valid options are "none" or "make"
+  # Valid options are "none", "make" (or "legacy"), "airflow" (or "sledgehammer") and "hammer".
+  # "hammer" writes the same hammer.d as "make" and runs every action as plain legacy Hammer: no
+  # dependency check, PD cache, sub-step resume, error scan, LVS report verdict, time-saved ledger
+  # or Postgres. Stages after syn read this key from the stage before them, so after switching to
+  # or from "hammer", rerun from syn (make redo-syn).
 
   # Synthesis tool to use.
   # Currently, we can choose from a selection of built-in tools which hammer-vlsi supports.

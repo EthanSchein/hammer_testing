@@ -27,6 +27,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from hammer.vlsi import legacy_hammer
 from hammer.vlsi.substep_resume import _newest_log
 
 ENABLE_ENV_VAR = "HAMMER_ERROR_SCAN"
@@ -39,6 +40,8 @@ _ERR_RE = re.compile(r"\*\*ERROR:?\s*(?:\(([A-Za-z0-9_-]+)\))?")
 
 
 def is_enabled(driver: Optional[Any] = None) -> bool:
+    if legacy_hammer.is_legacy_hammer(driver):
+        return False
     env = os.environ.get(ENABLE_ENV_VAR)
     if env is not None:
         return env.strip().lower() not in ("", "0", "false", "no", "off")

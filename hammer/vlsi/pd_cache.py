@@ -34,7 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     _resource = None  # type: ignore
 
-from hammer.vlsi import fingerprints, pd_store
+from hammer.vlsi import fingerprints, legacy_hammer, pd_store
 
 # The time-saved tracker (event recording, per-run summary, cross-run
 # reporting, ledger/project switches) lives in time_tracking.py. The cache
@@ -119,7 +119,9 @@ CACHE_SETTING_KEY = "vlsi.pd_cache.enabled"
 
 
 def is_cache_enabled(driver: Optional[Any] = None) -> bool:
-    """True if the env var or the driver's setting opts the cache on."""
+    """True if the env var or the driver's setting opts the cache on; never under build_system hammer."""
+    if legacy_hammer.is_legacy_hammer(driver):
+        return False
     env = os.environ.get(CACHE_ENV_VAR, "")
     if env.strip().lower() not in ("", "0", "false", "no", "off"):
         return True

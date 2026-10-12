@@ -42,6 +42,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from hammer.vlsi import legacy_hammer
+
 MARKER_NAME = ".substep_resume.json"
 ENABLE_ENV_VAR = "HAMMER_SUBSTEP_RESUME"
 ENABLE_SETTING_KEY = "vlsi.substep_resume.enabled"
@@ -72,7 +74,9 @@ _RESUME_CEILING = {
 
 
 def is_enabled(driver: Optional[Any] = None) -> bool:
-    """True unless switched off by env var or config. Defaults to on."""
+    """True unless switched off by env var, config or build_system hammer. Defaults to on."""
+    if legacy_hammer.is_legacy_hammer(driver):
+        return False
     env = os.environ.get(ENABLE_ENV_VAR)
     if env is not None:
         return env.strip().lower() not in ("", "0", "false", "no", "off")
@@ -368,6 +372,8 @@ def _stage_key(driver: Any, stage_tag: str) -> Optional[str]:
 
 
 def _db_enabled(driver: Optional[Any] = None) -> bool:
+    if legacy_hammer.is_legacy_hammer(driver):
+        return False
     env = os.environ.get(DB_ENABLE_ENV_VAR)
     if env is not None:
         return env.strip().lower() not in ("", "0", "false", "no", "off")

@@ -1570,6 +1570,9 @@ BuildSystems = {
     # Legacy Make flow -> emits hammer.d. "legacy" is a friendly alias.
     "make":         build_makefile,
     "legacy":       build_makefile,
+    # Plain legacy Hammer -> the same hammer.d, and every action runs as upstream
+    # Hammer with all SledgeHammer features off (see legacy_hammer.py).
+    "hammer":       build_makefile,
     # SledgeHammer Airflow flow -> emits hammer_dag.py. "sledgehammer" alias.
     "airflow":      build_airflow_dag,
     "sledgehammer": build_airflow_dag,

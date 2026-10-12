@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hammer.vlsi import pd_store
+from hammer.vlsi import legacy_hammer, pd_store
 
 
 # Recording switch for the durable time-saved ledger (the pd_cache_events
@@ -56,8 +56,10 @@ def is_ledger_enabled(driver: Optional[Any] = None) -> bool:
     config with ``vlsi.pd_cache.ledger_enabled: false``. The env var wins; the
     config key is consulted only when the env var is unset and a driver is
     given. Set the env var in the Airflow worker env (e.g. venv.sh) to control
-    DAG runs centrally.
+    DAG runs centrally. Always off under vlsi.core.build_system: hammer.
     """
+    if legacy_hammer.is_legacy_hammer(driver):
+        return False
     env = os.environ.get(LEDGER_ENV_VAR)
     if env is not None:
         return env.strip().lower() not in ("", "0", "false", "no", "off")
