@@ -2254,6 +2254,9 @@ class CLIDriver:
         >>> if __name__ == '__main__':
         >>>   CLIDriver().main()
         """
+        # The lite launcher's malloc arena cap is for Airflow's own processes, not hammer's tools.
+        if os.environ.pop("SLEDGE_SET_MALLOC_ARENA_MAX", None):
+            os.environ.pop("MALLOC_ARENA_MAX", None)
         #pdb.set_trace()
         parser = argparse.ArgumentParser()
 

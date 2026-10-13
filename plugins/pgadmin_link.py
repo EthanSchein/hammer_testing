@@ -51,7 +51,8 @@ def _is_pgadmin(port: int) -> bool:
         return False
 
 
-def _resolve_pgadmin_url() -> str:
+def _live_pgadmin_url():
+    """PGADMIN_URL, else the URL of a pgAdmin that answers on this host, else None."""
     override = os.environ.get("PGADMIN_URL")
     if override:
         return override
@@ -59,6 +60,14 @@ def _resolve_pgadmin_url() -> str:
     for port in range(base, base + 12):
         if _is_pgadmin(port):
             return f"http://localhost:{port}/browser/"
+    return None
+
+
+def _resolve_pgadmin_url() -> str:
+    live = _live_pgadmin_url()
+    if live:
+        return live
+    base = int(os.environ.get("PGADMIN_PORT", "5050"))
     try:
         with open(_PGADMIN_URL_FILE) as f:
             url = f.read().strip()
@@ -69,7 +78,9 @@ def _resolve_pgadmin_url() -> str:
     return f"http://localhost:{base}/browser/"
 
 
-PGADMIN_URL = _resolve_pgadmin_url()
+# The lite stack starts no pgAdmin, so it links only to one that answers.
+_LITE = os.environ.get("SLEDGE_LITE", "").strip().lower() not in ("", "0", "false", "no", "off")
+PGADMIN_URL = _live_pgadmin_url() if _LITE else _resolve_pgadmin_url()
 
 # Inline database-cylinder glyph (Postgres blue) as a data URI so the nav item
 # has an icon without depending on any external asset.
@@ -97,4 +108,4 @@ class PgAdminLinkPlugin(AirflowPlugin):
             "destination": "nav",
             "icon": _PGADMIN_ICON,
         }
-    ]
+    ] if PGADMIN_URL else []

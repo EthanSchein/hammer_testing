@@ -101,6 +101,16 @@ if [ -n "$_lab" ]; then
     echo "profile: lab (SLEDGE_LAB=1): Hammer only, no Airflow / Postgres / LDAP"
 fi
 
+# A checkout's first setup makes the lite stack its default; checkouts set up before keep the full one.
+if [ -z "$_lab" ] && [ ! -e .venv ] && [ ! -e .sledgehammer ]; then
+    mkdir -p .sledgehammer
+    chmod 700 .sledgehammer
+    printf '%s\n' "# sledgehammer starts the lite stack; set SLEDGE_LITE=0 here, or run 'sledgehammer full', for the full one." \
+        "SLEDGE_LITE=1" > .sledgehammer/launch.env
+    echo "new checkout: 'sledgehammer' will start the lite stack (scheduler, dag-processor and api-server, sized"
+    echo "for a small VM); 'sledgehammer full' starts the full one. The default is in .sledgehammer/launch.env."
+fi
+
 step "uv"
 command -v uv >/dev/null 2>&1 || curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"

@@ -353,6 +353,21 @@ def _load_smtp_settings() -> None:
         print(f"[secrets] WARNING: could not load {path}: {e}")
 
 
+def _load_launch_settings() -> None:
+    """Take this checkout's launch defaults from .sledgehammer/launch.env (SLEDGE_LITE=1 on a new install); env vars win."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".sledgehammer", "launch.env")
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, val = line.split("=", 1)
+            os.environ.setdefault(key.strip(), val.strip())
+
+
 def _pin_airflow_home() -> None:
     """Point AIRFLOW_HOME at this checkout before Airflow is imported.
 
@@ -396,6 +411,23 @@ def _default_cache_db() -> None:
         print(f"[secrets] WARNING: could not take the cache DB host from the Airflow conn: {e}")
 
 
+def _lite() -> bool:
+    """True for the single-user lite stack (`sledgehammer lite` or SLEDGE_LITE=1)."""
+    return os.environ.get("SLEDGE_LITE", "").strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _default_lite_limits() -> None:
+    """Small-memory defaults for the lite stack; anything already in the environment wins."""
+    for key, val in (("AIRFLOW__CORE__PARALLELISM", "2"),
+                     ("AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE", "2"),
+                     ("AIRFLOW__DATABASE__SQL_ALCHEMY_MAX_OVERFLOW", "5")):
+        os.environ.setdefault(key, val)
+    if "MALLOC_ARENA_MAX" not in os.environ:
+        # The marker tells DAG tasks the cap is ours, so they drop it again for hammer and the EDA tools.
+        os.environ["MALLOC_ARENA_MAX"] = "2"
+        os.environ["SLEDGE_SET_MALLOC_ARENA_MAX"] = "1"
+
+
 # Pin AIRFLOW_HOME first so the right airflow.cfg/webserver_config.py are read,
 # then load secrets, THEN import Airflow: importing it reads sql_alchemy_conn
 # right away, so the environment has to be populated first or it crashes on a
@@ -409,6 +441,10 @@ _start_local_postgres()
 _load_smtp_settings()
 _mirror_metadata_conn_for_callbacks()
 _default_cache_db()
+_load_launch_settings()
+if _lite():
+    os.environ["SLEDGE_LITE"] = "1"
+    _default_lite_limits()
 
 from airflow.cli.commands.standalone_command import StandaloneCommand
 from airflow.executors.executor_loader import ExecutorLoader
@@ -549,8 +585,8 @@ def _refuse_if_scheduler_running() -> None:
     Two deployments on one DB (a second checkout, a half-finished takeover) means
     duelling schedulers. We check the job table for a recent SchedulerJob
     heartbeat -- cross-host, since every scheduler heartbeats to the shared DB --
-    and print a loud notice. This used to refuse outright; it no longer blocks
-    (per operator request), it only informs.
+    and print a loud notice. The full launch warns and starts anyway; the lite
+    launch exits instead.
     """
     conn_uri = os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")
     if os.environ.get("SLEDGE_ALLOW_MULTI_SCHEDULER") or not conn_uri.startswith("postgresql"):
@@ -574,6 +610,15 @@ def _refuse_if_scheduler_running() -> None:
         conn.close()
     if rows:
         where = "; ".join(f"{host} (heartbeat {ts:%Y-%m-%d %H:%M:%S})" for host, ts in rows)
+        if _lite():
+            here = socket.getfqdn().lower()
+            if all(str(host).lower() == here for host, _ in rows) and _wait_for_stale(max(ts for _, ts in rows)):
+                return _refuse_if_scheduler_running()
+            sys.exit(
+                f"[guard] ERROR: another scheduler is already heartbeating on this database:\n"
+                f"          {where}\n"
+                f"        Lite mode runs the only scheduler. Stop the other one first, or set\n"
+                f"        SLEDGE_ALLOW_MULTI_SCHEDULER=1 if two are intentional.")
         print(
             f"[guard] WARNING: another scheduler is already heartbeating on this database:\n"
             f"          {where}\n"
@@ -581,6 +626,21 @@ def _refuse_if_scheduler_running() -> None:
             f"        fight over the DAG table and misroute tasks; make sure the other\n"
             f"        one is yours and shutting down, or that this is intentional HA.",
             file=sys.stderr)
+
+
+_stale_wait: list = []
+
+
+def _wait_for_stale(newest) -> bool:
+    """Pause 2 s and say True while this host's scheduler may be one that just stopped: under a minute, heartbeat not advancing."""
+    if not _stale_wait:
+        print("[guard] a scheduler on this host heartbeated in the last minute; if it stopped or crashed, "
+              "its heartbeat goes stale within a minute. Waiting for that ...")
+        _stale_wait[:] = [time.time() + 65, newest]
+    if newest > _stale_wait[1] or time.time() >= _stale_wait[0]:
+        return False
+    time.sleep(2)
+    return True
 
 
 def _refuse_if_whitelist_empty() -> None:
@@ -765,7 +825,51 @@ def _ensure_member_role() -> None:
         conn.close()
 
 
+LITE_SUPERVISOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sledge-lite-supervisor.sh")
+
+
+def _lite_port() -> int:
+    """Pin SLEDGE_PORT or the configured port, refusing if it is busy rather than moving: tasks report to {base_url}/execution/."""
+    req = os.environ.get("SLEDGE_PORT", "").strip()
+    port = int(req) if req.isdigit() else _effective_api_port()
+    if not _port_is_free(port):
+        sys.exit(
+            f"[guard] ERROR: port {port} is already in use on this host. Lite mode does not move\n"
+            f"        to another port, because its tasks report to this one. Stop whatever is\n"
+            f"        listening there, or choose a port with SLEDGE_PORT=<n>.")
+    os.environ["AIRFLOW__API__PORT"] = str(port)
+    os.environ["AIRFLOW__API__BASE_URL"] = f"http://localhost:{port}"
+    os.environ.setdefault("AIRFLOW__EDGE__API_URL", f"http://localhost:{port}/edge_worker/v1/rpcapi")
+    print(f"[port] serving on {port}.")
+    return port
+
+
+def _lite_main():
+    """Set up as the full launch does, then hand off to the lite supervisor, so no launcher stays resident."""
+    port = _lite_port()
+    _refuse_if_scheduler_running()
+    executor_class, _ = ExecutorLoader.import_default_executor_cls()
+    if not executor_class.is_local:
+        print("[lite] forcing the executor to LocalExecutor")
+        os.environ["AIRFLOW__CORE__EXECUTOR"] = executor_constants.LOCAL_EXECUTOR
+    from airflow.utils import db
+    print("[lite] checking the database is initialized")
+    db.initdb()
+    _refuse_if_whitelist_empty()
+    _promote_owner_to_admin()
+    _ensure_member_role()
+    host = socket.getfqdn()
+    print("[lite] starting the scheduler, dag-processor and api-server (no triggerer, log server or pgAdmin)")
+    print(f"[lite] Web UI  : http://localhost:{port}   (running on {host})")
+    print(f"[lite] Tunnel from your laptop: ssh -L {port}:localhost:{port} {os.environ.get('USER', '<you>')}@{host}")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execvp("bash", ["bash", LITE_SUPERVISOR])
+
+
 def main():
+    if _lite():
+        return _lite_main()
     _refuse_if_port_taken(_configure_port())
     _refuse_if_scheduler_running()
     _refuse_if_whitelist_empty()

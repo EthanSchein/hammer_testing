@@ -1,13 +1,16 @@
 """sledgehammer: the branded launcher + CLI for the SledgeHammer Airflow stack.
 
-Running ``sledgehammer`` with no arguments brings the full stack up with the
-LDAP login and the TOTP second factor on -- it sets SLEDGE_2FA=1 and runs the
-standalone launcher. Any other arguments pass straight through to the Airflow
+Running ``sledgehammer`` with no arguments brings the stack up with the LDAP
+login and the TOTP second factor on -- it sets SLEDGE_2FA=1 and runs the
+standalone launcher. A checkout's first ``scripts/uv_setup.sh`` makes the lite
+stack its default; checkouts set up before that start the full stack. Any other arguments pass straight through to the Airflow
 CLI, with the database secrets and AIRFLOW_HOME loaded first, so commands like
 ``sledgehammer db migrate`` work without exporting anything by hand.
 
-  sledgehammer                 launch the LDAP + 2FA stack (SLEDGE_2FA=1)
+  sledgehammer                 launch this checkout's default stack, LDAP + 2FA (SLEDGE_2FA=1)
   sledgehammer standalone      same as above
+  sledgehammer lite            scheduler, dag-processor and api-server, sized for a small VM
+  sledgehammer full            adds the triggerer, live logs of running tasks and pgAdmin
   sledgehammer db migrate      run an airflow command with secrets loaded
   sledgehammer dags list       (any airflow subcommand works)
   SLEDGE_2FA=0 sledgehammer    launch without the second factor (plain LDAP)
@@ -52,7 +55,7 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 LAUNCHER = os.path.join(REPO, "scripts", "airflow-standalone-ldap.py")
 # First-arg values that mean "bring the server up" rather than an airflow passthrough.
-LAUNCH_WORDS = {"", "standalone", "up", "start", "serve"}
+LAUNCH_WORDS = {"", "standalone", "up", "start", "serve", "lite", "full"}
 HELP_WORDS = {"-h", "--help", "help"}
 
 
@@ -587,12 +590,15 @@ def main() -> int:
     if sub in LAUNCH_WORDS:
         # Branded launch: LDAP + 2FA on by default; SLEDGE_2FA=0 opts out.
         os.environ.setdefault("SLEDGE_2FA", "1")
+        if sub in ("lite", "full"):
+            os.environ["SLEDGE_LITE"] = "1" if sub == "lite" else "0"
         # venv.sh sets up the BWRC tool environment that the workers inherit.
         cmd = ["bash", "-c", 'cd "$1" && shift && _sledgehammer_argv=("$@") && set -- && '
                'source ./venv.sh && exec "${_sledgehammer_argv[@]}"',
                "sledgehammer", REPO, sys.executable, LAUNCHER] + args[1:]
         if os.environ.get("SLEDGE_DRYRUN"):
             print(f"[dryrun] launch  SLEDGE_2FA={os.environ['SLEDGE_2FA']} "
+                  f"SLEDGE_LITE={os.environ.get('SLEDGE_LITE', '(checkout default)')} "
                   f"AIRFLOW_HOME={os.environ['AIRFLOW_HOME']}  ->  {' '.join(cmd)}")
             return 0
         os.execvp("bash", cmd)

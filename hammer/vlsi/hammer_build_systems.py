@@ -804,6 +804,9 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
             for _k in ("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN",
                        "AIRFLOW__CORE__SQL_ALCHEMY_CONN"):
                 sub_env.pop(_k, None)
+            # A malloc arena cap the launcher set is for Airflow's own processes, not hammer or the EDA tools.
+            if sub_env.pop("SLEDGE_SET_MALLOC_ARENA_MAX", None):
+                sub_env.pop("MALLOC_ARENA_MAX", None)
             # stdin closed so a tool that errors out and falls back to an
             # interactive prompt (innovus does this) exits on EOF instead of
             # hanging the task forever.
