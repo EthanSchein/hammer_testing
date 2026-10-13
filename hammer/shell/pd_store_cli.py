@@ -658,7 +658,7 @@ def _cmd_make_dag(args: argparse.Namespace) -> int:
           file=sys.stderr)
     print(f"DAG for '{design}' generated. Airflow's dag-processor should",
           file=sys.stderr)
-    print(f"register it within ~30 seconds as {dag_label}.", file=sys.stderr)
+    print(f"register it within a few minutes as {dag_label}.", file=sys.stderr)
     return 0
 
 
@@ -1644,7 +1644,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "make-dag",
         help="Generate an Airflow DAG for an existing design and symlink it "
              "into the dags/ folder. Wraps hammer-vlsi build with "
-             "vlsi.core.build_system=airflow. Within ~30 seconds the DAG "
+             "vlsi.core.build_system=airflow. Within a few minutes the DAG "
              "appears as Hammer_<design> in the Airflow UI.",
     )
     p_dag.add_argument("--design", required=True,
