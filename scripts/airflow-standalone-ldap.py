@@ -268,13 +268,13 @@ def _load_postgres_target() -> None:
 
 def _start_local_postgres() -> None:
     """Start the Postgres that sledge-local-postgres.sh made when the Airflow conn is on this host and it is stopped."""
-    from urllib.parse import urlparse
     try:
-        url = urlparse(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""))
-        host = url.hostname
-    except ValueError:
+        from hammer.vlsi import pd_store
+    except Exception as e:
+        print(f"[postgres] WARNING: could not check for your local Postgres: {e}")
         return
-    if not url.scheme.startswith("postgres") or host not in ("localhost", "127.0.0.1", "::1"):
+    host = pd_store._parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")).get("host")
+    if host not in ("localhost", "127.0.0.1", "::1"):
         return
     root = os.environ.get("SLEDGE_PG_DIR") or os.path.join(os.path.expanduser("~"), ".sledgehammer", "postgres")
     if not os.path.isfile(os.path.join(root, "data", "PG_VERSION")):
