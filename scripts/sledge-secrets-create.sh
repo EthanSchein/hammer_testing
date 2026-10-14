@@ -8,14 +8,18 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SECRETS_DIR="$REPO/.sledgehammer"
-SECRETS_FILE="${SLEDGE_SECRETS_FILE:-$SECRETS_DIR/airflow-secrets.env.gpg}"
+SECRETS_FILE="${SLEDGE_SECRETS_FILE:-$REPO/.sledgehammer/airflow-secrets.env.gpg}"
+case "$SECRETS_FILE" in "~/"*) SECRETS_FILE="$HOME/${SECRETS_FILE#"~/"}" ;; esac
+SECRETS_DIR="$(dirname "$SECRETS_FILE")"
 PY="$REPO/.venv/bin/python"; [ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
 
 if [ -f "$SECRETS_FILE" ]; then
     echo "already present: $SECRETS_FILE (delete it first to recreate)"
     exit 0
 fi
+mkdir -p -m 700 "$SECRETS_DIR"
+[ ! "$SECRETS_DIR" -ef "$REPO/.sledgehammer" ] || chmod 700 "$SECRETS_DIR"
+[ -w "$SECRETS_DIR" ] && [ -x "$SECRETS_DIR" ] || { echo "cannot write to $SECRETS_DIR" >&2; exit 1; }
 
 ask() {
     local given="SLEDGE_$1" reply
@@ -69,7 +73,6 @@ case "$PG_HOST" in
     *:*) CONN_HOST="[$PG_HOST]" ;;
     *) CONN_HOST="$PG_HOST" ;;
 esac
-mkdir -p "$SECRETS_DIR"; chmod 700 "$SECRETS_DIR"
 tmp="$(mktemp -p /dev/shm 2>/dev/null || mktemp)"
 trap 'shred -u "$tmp" 2>/dev/null || rm -f "$tmp"' EXIT
 {
