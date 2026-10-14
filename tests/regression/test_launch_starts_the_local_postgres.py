@@ -1,6 +1,5 @@
 import os
 import shutil
-import socket
 import subprocess
 import sys
 
@@ -98,16 +97,3 @@ def test_a_conn_to_another_host_never_starts_it(tmp_path, tools) -> None:
     assert launch.launch(host="db.example.edu") == []
     assert fake_postgres.calls(launch.log) == calls
     assert launch.local_postgres("status").returncode == 3
-
-
-def test_a_failed_start_says_why_and_the_launch_goes_on(tmp_path, tools) -> None:
-    launch = Launch(tmp_path, tools)
-    assert launch.local_postgres("setup").returncode == 0
-    assert launch.local_postgres("stop").returncode == 0
-    with socket.socket() as other:
-        other.bind(("127.0.0.1", launch.port))
-        other.listen()
-        [line] = launch.launch()
-    assert line.startswith("[postgres] WARNING: could not start your local Postgres in ")
-    assert f"port {launch.port} is in use by another program" in line
-    assert len(launch.starts()) == 1

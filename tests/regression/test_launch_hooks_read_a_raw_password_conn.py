@@ -119,9 +119,7 @@ def launcher(tmp_path):
 def test_every_hook_logs_in_with_the_fields_of_the_conn(launcher, password) -> None:
     raw = unquote(password)
     calls, _, _ = launcher.run(conn(password), login(raw), *HOOKS)
-    assert calls == [["_refuse_if_scheduler_running", [], {**login(raw), "connect_timeout": 8}],
-                     ["_promote_owner_to_admin", [], login(raw)],
-                     ["_ensure_member_role", [], login(raw)]]
+    assert calls == [[hook, [], {**login(raw), "connect_timeout": 10}] for hook in HOOKS]
 
 
 @pytest.mark.parametrize("password", ["SeKrit/tail", "Se/Kr?it#tail", SECRET])

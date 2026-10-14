@@ -266,6 +266,16 @@ def _load_postgres_target() -> None:
         os.environ["SLEDGE_PG_DIR"] = target["SLEDGE_PG_DIR"]
 
 
+def _local_postgres_port(root: str):
+    """The port in root's postgresql.conf, read as sledge-local-postgres.sh reads it; None without that file."""
+    try:
+        with open(os.path.join(root, "data", "postgresql.conf")) as f:
+            ports = re.findall(r"^[ \t]*port[ \t]*=[ \t]*([0-9]+)", f.read(), re.M)
+    except (OSError, ValueError):
+        return None
+    return int(ports[-1]) if ports else 5432
+
+
 def _start_local_postgres() -> None:
     """Start the Postgres that sledge-local-postgres.sh made when the Airflow conn is on this host and it is stopped."""
     try:
@@ -273,24 +283,24 @@ def _start_local_postgres() -> None:
     except Exception as e:
         print(f"[postgres] WARNING: could not check for your local Postgres: {e}")
         return
-    host = pd_store._parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")).get("host")
-    if host not in ("localhost", "127.0.0.1", "::1"):
+    settings = pd_store._parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""))
+    if settings.get("host") not in ("localhost", "127.0.0.1", "::1"):
         return
     root = os.environ.get("SLEDGE_PG_DIR") or os.path.join(os.path.expanduser("~"), ".sledgehammer", "postgres")
     if not os.path.isfile(os.path.join(root, "data", "PG_VERSION")):
         return
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sledge-local-postgres.sh")
-    res = subprocess.run(["bash", script, "status"], capture_output=True, text=True)
-    if res.returncode == 0:
+    if subprocess.run(["bash", script, "status"], capture_output=True, text=True).returncode == 0:
         return
-    if res.returncode == 3:
-        res = subprocess.run(["bash", script, "start"], capture_output=True, text=True)
-        if res.returncode == 0:
-            print(f"[postgres] started your local Postgres in {root}")
-            return
+    res = subprocess.run(["bash", script, "start"], capture_output=True, text=True)
+    if res.returncode == 0:
+        print(f"[postgres] started your local Postgres in {root}")
+        return
     lines = (res.stderr or res.stdout).strip().splitlines()
-    print(f"[postgres] WARNING: could not start your local Postgres in {root}: "
-          f"{lines[-1] if lines else 'no output'}")
+    reason = f"could not start your local Postgres in {root}: {lines[-1] if lines else 'no output'}"
+    if settings.get("port", 5432) == _local_postgres_port(root):
+        sys.exit(f"[postgres] ERROR: {reason}")
+    print(f"[postgres] WARNING: {reason}")
 
 
 def _mirror_metadata_conn_for_callbacks() -> None:
@@ -579,14 +589,14 @@ def _refuse_if_port_taken(port: int) -> None:
             f"        port, or unset SLEDGE_PORT to let the launcher auto-select.")
 
 
-def _connect_airflow_db(**options):
+def _connect_airflow_db():
     """Connect to Airflow's database with the conn split into fields, so a raw / ? or # in its password still connects."""
     import psycopg2
     from hammer.vlsi import pd_store
     settings = pd_store._parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""))
     if not settings:
         raise ValueError("the Airflow conn is not a Postgres URL")
-    return psycopg2.connect(**settings, **options)
+    return psycopg2.connect(**settings, connect_timeout=pd_store._connect_timeout())
 
 
 def _refuse_if_scheduler_running() -> None:
@@ -602,7 +612,7 @@ def _refuse_if_scheduler_running() -> None:
     if os.environ.get("SLEDGE_ALLOW_MULTI_SCHEDULER") or not conn_uri.startswith("postgresql"):
         return  # opt-out, or sqlite/local where there's nothing to race
     try:
-        conn = _connect_airflow_db(connect_timeout=8)
+        conn = _connect_airflow_db()
     except Exception:
         return  # no driver or DB unreachable -- Airflow's own startup will report it
     try:
