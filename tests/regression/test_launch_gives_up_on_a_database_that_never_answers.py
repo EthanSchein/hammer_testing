@@ -8,8 +8,7 @@ import pytest
 
 from tests.utils import fake_postgres
 
-HOOKS = ["_refuse_if_scheduler_running", "_refuse_if_whitelist_empty", "_promote_owner_to_admin",
-         "_ensure_member_role"]
+HOOKS = ["_refuse_if_scheduler_running", "_prepare_cache_schema"]
 
 # Runs the launcher to Airflow's start with a psycopg2 that, like libpq, waits connect_timeout seconds or forever.
 DRIVER = """
@@ -35,7 +34,7 @@ class OperationalError(Exception):
 
 def hook():
     frame = sys._getframe(2)
-    while frame is not None and not frame.f_code.co_name.startswith(("_refuse_if", "_promote", "_ensure")):
+    while frame is not None and not frame.f_code.co_name.startswith(("_refuse_if", "_prepare")):
         frame = frame.f_back
     return frame.f_code.co_name if frame is not None else "?"
 
@@ -97,9 +96,7 @@ def test_each_launch_connect_gives_up_on_a_server_that_never_answers(tmp_path) -
         calls, out = launch(tmp_path, server.getsockname()[1], HAMMER_PG_CONNECT_TIMEOUT="1")
     assert [call[:2] for call in calls] == [[hook, 1] for hook in HOOKS]
     assert all(0.9 < call[2] < 2.5 for call in calls), calls
-    assert "[whitelist] WARNING: couldn't check the login whitelist (timeout expired)." in out
-    assert "[roles] couldn't check the owner's role: could not connect to Airflow's database; " \
-           "check it with: sledgehammer postgres show" in out
+    assert "[cache] WARNING: could not prepare the cache database (timeout expired)." in out
 
 
 @pytest.mark.parametrize("setting, seconds", [(None, 10), ("3", 3), ("2.5", 3), ("0", 0)])

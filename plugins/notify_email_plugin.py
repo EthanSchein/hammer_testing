@@ -24,10 +24,10 @@ from airflow.api_fastapi.core_api.security import GetUserDep
 
 
 def _uid_and_default(user) -> tuple[str, str]:
-    """The logged-in uid plus the LDAP address to offer as a pre-fill default."""
+    """The logged-in uid plus any address the login carries, offered as a pre-fill default."""
     uid = (getattr(user, "username", None) or user.get_name() or "").strip()
-    ldap_email = (getattr(user, "email", None) or "").strip()
-    return uid, ldap_email
+    email = (getattr(user, "email", None) or "").strip()
+    return uid, email
 
 
 _PAGE = """<!doctype html>
@@ -123,12 +123,12 @@ def show_form() -> str:
 @app.get("/whoami")
 def whoami(user: GetUserDep):
     from hammer.vlsi import pd_store
-    uid, ldap_email = _uid_and_default(user)
+    uid, email = _uid_and_default(user)
     try:
         current = pd_store.get_notify_email(uid) or ""
     except Exception:
         current = ""
-    return {"uid": uid, "email": ldap_email, "current": current}
+    return {"uid": uid, "email": email, "current": current}
 
 
 @app.post("/save")

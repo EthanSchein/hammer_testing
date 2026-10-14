@@ -8,13 +8,9 @@ import pytest
 
 from tests.utils import fake_postgres
 
-HOOKS = ["_refuse_if_scheduler_running", "_promote_owner_to_admin", "_ensure_member_role"]
+HOOKS = ["_refuse_if_scheduler_running"]
 RAW = ["SeKrit/tail", "SeKrit?tail", "SeKrit#tail", "Se/Kr?it#tail", "Qx7/Zv9?Wm4#Rt2"]
 SECRET = "Qx7/Zv9?Wm4#Rt2"
-OWNER_FAILED = ("[roles] couldn't check the owner's role: could not connect to Airflow's database; "
-                "check it with: sledgehammer postgres show")
-MEMBER_FAILED = ("[roles] couldn't check the Member role: could not connect to Airflow's database; "
-                 "check it with: sledgehammer postgres show")
 
 # Loads the launcher with Airflow stubbed out and runs the named hooks against a psycopg2 that only accepts LOGIN.
 DRIVER = """
@@ -123,18 +119,17 @@ def test_every_hook_logs_in_with_the_fields_of_the_conn(launcher, password) -> N
 
 
 @pytest.mark.parametrize("password", ["SeKrit/tail", "Se/Kr?it#tail", SECRET])
-def test_the_scheduler_guard_and_the_roles_steps_run_with_a_raw_password_conn(launcher, password) -> None:
+def test_the_scheduler_guard_runs_with_a_raw_password_conn(launcher, password) -> None:
     _, out, err = launcher.run(conn(password), login(password), *HOOKS)
     assert "[guard] WARNING: another scheduler is already heartbeating on this database:" in err
     assert "other-host (heartbeat 2026-10-12 09:30:00)" in err
-    assert out.splitlines() == ["[roles] instance owner 'alice' already has Admin.", "[roles] Member role up to date."]
+    assert out == ""
 
 
 @pytest.mark.parametrize("password", [SECRET, quote(SECRET, safe="")])
-def test_a_failed_login_says_what_failed_without_any_part_of_the_password(launcher, password) -> None:
+def test_a_failed_login_prints_no_part_of_the_password(launcher, password) -> None:
     calls, out, err = launcher.run(conn(password), login("something else"), *HOOKS)
-    assert len(calls) == 3
-    assert out.splitlines() == [OWNER_FAILED, MEMBER_FAILED]
+    assert len(calls) == 1
     for secret in (SECRET, quote(SECRET, safe="")):
         assert not [secret[i:i + 3] for i in range(len(secret) - 2) if secret[i:i + 3] in out + err]
 
@@ -142,12 +137,10 @@ def test_a_failed_login_says_what_failed_without_any_part_of_the_password(launch
 def test_a_conn_with_no_fields_is_never_used_to_log_in(launcher) -> None:
     calls, out, _ = launcher.run("postgresql+psycopg2://", login(SECRET), *HOOKS)
     assert calls == []
-    assert out.splitlines() == [OWNER_FAILED, MEMBER_FAILED]
+    assert out == ""
 
 
-def test_without_psycopg2_the_roles_steps_name_the_missing_driver(launcher) -> None:
-    calls, out, _ = launcher.run(conn(SECRET), login(SECRET), *HOOKS, NO_DRIVER="1")
+def test_without_psycopg2_the_scheduler_guard_steps_aside(launcher) -> None:
+    calls, out, err = launcher.run(conn(SECRET), login(SECRET), *HOOKS, NO_DRIVER="1")
     assert calls == []
-    owner, member = out.splitlines()
-    assert owner.startswith("[roles] couldn't check the owner's role (") and "psycopg2" in owner
-    assert member.startswith("[roles] couldn't check the Member role (") and "psycopg2" in member
+    assert out == "" and "[guard]" not in err

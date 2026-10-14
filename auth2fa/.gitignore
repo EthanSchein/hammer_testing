@@ -1,2 +1,0 @@
-# Runtime state for the demo store -- never commit enrollments/secrets.
-*.sqlite

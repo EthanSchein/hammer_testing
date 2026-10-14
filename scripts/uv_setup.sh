@@ -3,9 +3,9 @@
 # Run from a fresh clone:  ./scripts/uv_setup.sh
 #
 # Profiles
-#   (default)       The full SledgeHammer stack: Hammer, Airflow with LDAP auth,
-#                   the Postgres driver, sibling plugins. What the studio needs.
-#   SLEDGE_LAB=1    Hammer only. No Airflow, no Postgres driver, no LDAP, no
+#   (default)       The full SledgeHammer stack: Hammer, Airflow, the Postgres
+#                   driver, sibling plugins. What the studio needs.
+#   SLEDGE_LAB=1    Hammer only. No Airflow, no Postgres driver, no
 #                   compiled extensions, no dev tooling, no prompts, and it
 #                   prefers the system python over a downloaded one. For
 #                   coursework where people run hammer-vlsi and nothing else.
@@ -13,8 +13,6 @@
 #
 # Knobs (either profile)
 #   SLEDGE_NO_PLUGINS=1   skip the sibling hammer-*-plugin install loop
-#   SLEDGE_NO_LDAP=1      default profile only: skip python-ldap and the OpenLDAP
-#                         headers it needs. Airflow's LDAP login will not work.
 #   PYVER=3.11            python minor version the venv is built with
 set -euo pipefail
 
@@ -24,9 +22,8 @@ cd "$REPO"
 _path_before_cleanup="${PATH:-}"
 
 _lab="${SLEDGE_LAB:-}"
-_no_ldap="${SLEDGE_NO_LDAP:-}"
 
-# Sanitize the build environment. psycopg2 and python-ldap compile from source
+# Sanitize the build environment. psycopg2 compiles from source
 # here; whatever OpenSSL / libpq is on the linker path gets baked into the
 # binaries as an RPATH, and a FOREIGN one (conda's, an active venv's, an env
 # module's) then breaks the binary in every future shell -- e.g. conda's
@@ -82,13 +79,10 @@ fi
 
 PG_LOCAL="$HOME/pg_local"
 LIBNSL_LOCAL="$HOME/libnsl_local"
-LDAP_LOCAL="$HOME/ldap_local"
 SECRETS_DIR="$REPO/.sledgehammer"
 SECRETS_FILE="${SLEDGE_SECRETS_FILE:-$SECRETS_DIR/airflow-secrets.env.gpg}"
 AIRFLOW_VERSION="${AIRFLOW_VERSION:-3.1.0}"
-FAB_VERSION="${FAB_VERSION:-3.6.3}"
 EDGE3_VERSION="${EDGE3_VERSION:-1.3.0}"
-LDAP_VERSION="${LDAP_VERSION:-3.4.7}"
 PYVER="${PYVER:-3.11}"
 # Must match SLANG_VERSION in hammer/vlsi/rtl_check.py: the RTL fingerprint is a
 # function of slang's AST JSON, and rtl_check refuses a version it was not pinned
@@ -98,7 +92,7 @@ SLANG_VERSION="${SLANG_VERSION:-11.0}"
 step() { printf '\n=== %s ===\n' "$1"; }
 
 if [ -n "$_lab" ]; then
-    echo "profile: lab (SLEDGE_LAB=1): Hammer only, no Airflow / Postgres / LDAP"
+    echo "profile: lab (SLEDGE_LAB=1): Hammer only, no Airflow / Postgres"
 fi
 
 # A checkout's first setup makes the lite stack its default; checkouts set up before keep the full one.
@@ -178,24 +172,6 @@ if [ ! -f "$LIBNSL_LOCAL/usr/lib64/libnsl.so.1" ]; then
 fi
 ls "$LIBNSL_LOCAL/usr/lib64/libnsl.so.1"
 
-if [ -z "$_no_ldap" ]; then
-step "OpenLDAP headers (python-ldap builds from source)"
-if [ ! -f "$LDAP_LOCAL/usr/include/lber.h" ]; then
-    tmp="$(mktemp -d)"
-    ( cd "$tmp"
-      dnf download openldap-devel
-      mkdir -p "$LDAP_LOCAL"
-      rpm2cpio openldap-devel-*x86_64.rpm | ( cd "$LDAP_LOCAL" && cpio -idmv ) )
-    # openldap-devel ships libldap.so/liblber.so symlinks to .so.2 files that
-    # live in the runtime 'openldap' package (already in /lib64); repoint them
-    # so the linker resolves -lldap/-llber against the system libs.
-    ln -sf /lib64/libldap.so.2 "$LDAP_LOCAL/usr/lib64/libldap.so"
-    ln -sf /lib64/liblber.so.2 "$LDAP_LOCAL/usr/lib64/liblber.so"
-    rm -rf "$tmp"
-fi
-ls "$LDAP_LOCAL/usr/include/lber.h"
-fi
-
 step "persist PATH in ~/.bashrc"
 grep -q 'pg_local/usr/bin' "$HOME/.bashrc" 2>/dev/null || \
     printf '\nexport PATH="$HOME/.local/bin:$HOME/pg_local/usr/bin:$PATH"\n' >> "$HOME/.bashrc"
@@ -268,25 +244,13 @@ uv pip uninstall myst-parser mdit-py-plugins markdown-it-py >/dev/null 2>&1 || t
 # Airflow 3 also opens an asyncpg engine on a Postgres metadata DB.
 uv pip install "apache-airflow==${AIRFLOW_VERSION}" "asyncpg>=0.30.0,<1" --constraint "$CONSTRAINT"
 # Edge worker support (constrained so it can't drag airflow to a newer release).
-# Installed BEFORE fab: fab is deliberately unconstrained and must resolve last
-# so the newer deps it needs (pyjwt, common-compat, sqlalchemy) end up on top.
 uv pip install "apache-airflow-providers-edge3==${EDGE3_VERSION}" --constraint "$CONSTRAINT"
-# SQLAlchemy 2.1 breaks sqlalchemy-utils, which Airflow imports.
-uv pip install "apache-airflow-providers-fab==${FAB_VERSION}" "sqlalchemy>=2.0.16,<2.1"
-if [ -z "$_no_ldap" ]; then
-CPPFLAGS="-I$LDAP_LOCAL/usr/include -I/usr/include ${CPPFLAGS:-}" \
-LDFLAGS="-L$LDAP_LOCAL/usr/lib64 -L/lib64 ${LDFLAGS:-}" \
-    uv pip install "python-ldap==${LDAP_VERSION}" --no-binary python-ldap
-else
-    echo "  python-ldap skipped (SLEDGE_NO_LDAP set); Airflow's LDAP login will not work"
-fi
 # psycopg2 is not a base dependency (see pyproject.toml: it lives in the
 # "cache" extra so a plain hammer install needs no compiler). The studio
 # does need it, and needs it built here rather than as a wheel, so that the
 # libraries sanitized above are the ones baked into it.
 uv pip install "psycopg2==2.9.11" --no-binary psycopg2 --reinstall
 AIRFLOW_HOME="$(mktemp -d)" airflow version
-AIRFLOW_HOME="$(mktemp -d)" python3 -c "import airflow.providers.fab.auth_manager.fab_auth_manager"
 
 step "verify the compiled build is clean (no foreign library baked in)"
 # The real safety net: whatever environment we failed to strip above, a

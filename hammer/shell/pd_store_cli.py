@@ -18,8 +18,8 @@ Master-database and per-stage cache blobs:
     stage-pull  <stage_tag> --rundir <path> [--master <path>]
     blob-list   [--stage <tag>] [-n N]
 
-Per-user workspaces (used by the shared Airflow + LDAP deployment so that
-one user's "clean" task can't wipe another user's build dir):
+Per-user workspaces (so that one user's "clean" task can't wipe another
+user's build dir):
     workspace-list                  List every registered workspace.
     workspace-show  <username>      Print one user's workspace root.
     workspace-set   <username> <p>  Set or update a user's workspace.
@@ -210,8 +210,8 @@ def _cmd_grant(args: argparse.Namespace) -> int:
 
 
 def _cmd_onboard(args: argparse.Namespace) -> int:
-    """One command for a new teammate: metadata DB + schema access + whitelist."""
-    for line in pd_store.onboard_user(args.role, whitelist=not args.no_whitelist):
+    """One command for a new teammate: metadata DB + schema access."""
+    for line in pd_store.onboard_user(args.role):
         print(f"  {line}")
     print(f"'{args.role}' is set up. They can now run: sledgehammer")
     return 0
@@ -221,180 +221,6 @@ def _cmd_revoke(args: argparse.Namespace) -> int:
     pd_store.revoke_access(args.role)
     print(f"Removed '{args.role}' from {pd_store.SLEDGEHAMMER_GROUP}.")
     return 0
-
-
-def _cmd_whitelist(args: argparse.Namespace) -> int:
-    try:
-        if args.remove:
-            pd_store.whitelist_remove(args.remove)
-            print(f"Removed '{args.remove.strip().lower()}' from the login whitelist.")
-            return 0
-        if args.uid:
-            pd_store.whitelist_add(args.uid)
-            print(f"Whitelisted '{args.uid.strip().lower()}' for Airflow login.")
-            return 0
-    except Exception as e:
-        if getattr(e, "pgcode", None) == "42501":  # insufficient_privilege
-            print("permission denied: only an admin (the database owner) can "
-                  "manage the login whitelist.")
-            return 1
-        raise
-    rows = pd_store.whitelist_list()
-    if not rows:
-        print("(login whitelist is empty -- nobody can log in)")
-        return 0
-    print(f"Login whitelist ({len(rows)}):")
-    for uid, added_at, added_by in rows:
-        when = added_at.strftime("%Y-%m-%d") if added_at else "?"
-        print(f"  {uid:20} added {when} by {added_by}")
-    return 0
-
-
-def _twofa_store():
-    """The Postgres-backed TOTP store. auth2fa lives at the repo root, which
-    isn't always on sys.path when the installed `studio` script runs, so add it.
-    """
-    import sys
-    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    if repo not in sys.path:
-        sys.path.insert(0, repo)
-    from auth2fa.store import get_store
-    return get_store("postgres")
-
-
-def _cmd_twofa(args: argparse.Namespace) -> int:
-    try:
-        store = _twofa_store()
-        if args.reset:
-            uid = args.reset.strip().lower()
-            if not _confirm(
-                f"Reset 2FA for '{uid}'? They'll enroll a new authenticator on next login.",
-                args.yes,
-            ):
-                print("aborted.")
-                return 1
-            store.delete(uid)
-            print(f"Reset 2FA for '{uid}'.")
-            return 0
-        if args.uid:
-            uid = args.uid.strip().lower()
-            enr = store.get(uid)
-            if not enr:
-                print(f"'{uid}': not enrolled.")
-            elif enr.confirmed:
-                print(f"'{uid}': enrolled (active).")
-            else:
-                print(f"'{uid}': enrollment started but not confirmed.")
-            return 0
-        rows = store.list_enrolled()
-        if not rows:
-            print("(nobody has set up two-factor yet)")
-            return 0
-        print(f"Two-factor enrollments ({len(rows)}):")
-        for enr in rows:
-            print(f"  {enr.uid:20} {'active' if enr.confirmed else 'pending'}")
-        return 0
-    except Exception as e:
-        if getattr(e, "pgcode", None) == "42501":  # insufficient_privilege
-            print("permission denied: only an admin (the database owner) can "
-                  "manage 2FA enrollments.")
-            return 1
-        raise
-
-
-def _admin_metadata_settings(explicit_conn=None):
-    """psycopg2 connect kwargs for the Airflow metadata DB (where the FAB Admin
-    role lives -- a different DB from the studio cache). Tries an explicit
-    --conn, then the normal resolver (env / SLEDGE_ file / airflow.cfg), then
-    reads the conn straight out of a running airflow process, so it works in a
-    plain shell as long as the stack is up.
-    """
-    if explicit_conn:
-        s = pd_store._parse_conn_uri(explicit_conn)
-        if s:
-            return s
-    s = pd_store.airflow_metadata_conn_settings()
-    if s:
-        return s
-    import glob
-    for environ in glob.glob("/proc/[0-9]*/environ"):
-        try:
-            blob = open(environ, "rb").read()
-        except Exception:
-            continue
-        for kv in blob.split(b"\x00"):
-            if kv.startswith(b"AIRFLOW__DATABASE__SQL_ALCHEMY_CONN="):
-                s = pd_store._parse_conn_uri(kv.split(b"=", 1)[1].decode("utf-8", "ignore"))
-                if s:
-                    return s
-    return {}
-
-
-def _cmd_admin(args: argparse.Namespace) -> int:
-    """Grant/list/revoke the Airflow (FAB) Admin role. Replaces the Airflow 2.x
-    `airflow users add-role`, which was removed in Airflow 3.
-    """
-    settings = _admin_metadata_settings(args.conn)
-    if not settings:
-        print("admin: couldn't find the Airflow metadata DB connection.\n"
-              "  Run it while the server is up, or with the secrets loaded, or pass it:\n"
-              "  studio admin <uid> --conn postgresql://USER:PW@HOST:PORT/DBNAME")
-        return 1
-    if pd_store.psycopg2 is None:
-        raise pd_store.DatabaseUnavailable("psycopg2 is not installed; studio admin needs it to reach the Airflow metadata DB.")
-    conn = pd_store.psycopg2.connect(**{"connect_timeout": pd_store._connect_timeout(), **settings})
-    try:
-        with conn.cursor() as cur:
-            if args.remove:
-                uid = args.remove.strip()
-                cur.execute(
-                    "DELETE FROM ab_user_role ur USING ab_user u, ab_role r "
-                    "WHERE ur.user_id = u.id AND ur.role_id = r.id "
-                    "AND lower(u.username) = lower(%s) AND r.name = 'Admin'", (uid,))
-                conn.commit()
-                print(f"Removed Admin from '{uid}'." if cur.rowcount
-                      else f"'{uid}' wasn't an Admin (or no such user).")
-                return 0
-            if args.uid:
-                uid = args.uid.strip()
-                cur.execute("SELECT 1 FROM ab_user WHERE lower(username) = lower(%s)", (uid,))
-                if not cur.fetchone():
-                    print(f"No Airflow user '{uid}' yet -- they have to log in once first "
-                          f"(LDAP auto-registers the account on first login).")
-                    return 1
-                cur.execute("SELECT setval('ab_user_role_id_seq', "
-                            "COALESCE((SELECT MAX(id) FROM ab_user_role), 0) + 1, false)")
-                cur.execute(
-                    "INSERT INTO ab_user_role (id, user_id, role_id) "
-                    "SELECT nextval('ab_user_role_id_seq'), u.id, r.id FROM ab_user u, ab_role r "
-                    "WHERE lower(u.username) = lower(%s) AND r.name = 'Admin' "
-                    "AND NOT EXISTS (SELECT 1 FROM ab_user_role x "
-                    "                WHERE x.user_id = u.id AND x.role_id = r.id)", (uid,))
-                conn.commit()
-                print(f"Granted Admin to '{uid}'. Log out and back in to pick it up."
-                      if cur.rowcount else f"'{uid}' is already an Admin.")
-                return 0
-            cur.execute(
-                "SELECT u.username FROM ab_user u "
-                "JOIN ab_user_role ur ON ur.user_id = u.id "
-                "JOIN ab_role r ON r.id = ur.role_id "
-                "WHERE r.name = 'Admin' ORDER BY u.username")
-            admins = [r[0] for r in cur.fetchall()]
-            if not admins:
-                print("(no Admin users yet)")
-            else:
-                print(f"Airflow Admins ({len(admins)}):")
-                for a in admins:
-                    print(f"  {a}")
-            return 0
-    except Exception as e:
-        if getattr(e, "pgcode", None) == "42P01":  # undefined_table
-            print("admin: ab_user/ab_role not found -- is that the Airflow metadata DB, "
-                  "and has it been migrated?")
-            return 1
-        raise
-    finally:
-        conn.close()
 
 
 def _confirm(prompt: str, assume_yes: bool) -> bool:
@@ -1411,11 +1237,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_brea.set_defaults(func=_cmd_blob_reassign)
 
     p_onboard = sub.add_parser("onboard",
-        help="Set up a new teammate: create their airflow_<user> metadata DB, "
-             "grant hammer_poc access, and whitelist their login.")
+        help="Set up a new teammate: create their airflow_<user> metadata DB "
+             "and grant hammer_poc access.")
     p_onboard.add_argument("role", help="Their Postgres role / EECS uid (e.g. 'desvaun').")
-    p_onboard.add_argument("--no-whitelist", action="store_true",
-                           help="Skip the login-whitelist step.")
     p_onboard.set_defaults(func=_cmd_onboard)
 
     p_grant = sub.add_parser("grant",
@@ -1427,32 +1251,6 @@ def _build_parser() -> argparse.ArgumentParser:
                               help=f"Remove a role from the {pd_store.SLEDGEHAMMER_GROUP} group.")
     p_revoke.add_argument("role")
     p_revoke.set_defaults(func=_cmd_revoke)
-
-    p_whitelist = sub.add_parser("whitelist",
-        help="Manage the Airflow login whitelist (DB-backed, no restart). "
-             "'whitelist <uid>' adds, 'whitelist' lists, 'whitelist --remove <uid>' removes.")
-    p_whitelist.add_argument("uid", nargs="?", help="EECS uid to allow (omit to list).")
-    p_whitelist.add_argument("--remove", metavar="UID", help="Remove this uid from the whitelist.")
-    p_whitelist.set_defaults(func=_cmd_whitelist)
-
-    p_2fa = sub.add_parser("2fa",
-        help="Inspect or reset Airflow two-factor (TOTP) enrollments. "
-             "'2fa' lists everyone, '2fa <uid>' shows one, '2fa --reset <uid>' clears one.")
-    p_2fa.add_argument("uid", nargs="?", help="EECS uid to show status for (omit to list all).")
-    p_2fa.add_argument("--reset", metavar="UID",
-                       help="Clear this uid's enrollment so they set up a new device on next login.")
-    p_2fa.add_argument("--yes", action="store_true", help="Skip the confirmation prompt on --reset.")
-    p_2fa.set_defaults(func=_cmd_twofa)
-
-    p_admin = sub.add_parser("admin",
-        help="Grant/list/revoke the Airflow Admin role (the FAB Admin that unlocks "
-             "Browse/Admin/Security). Replaces the removed `airflow users add-role`. "
-             "'admin <uid>' grants, 'admin' lists, 'admin --remove <uid>' revokes.")
-    p_admin.add_argument("uid", nargs="?", help="Airflow username to make Admin (omit to list).")
-    p_admin.add_argument("--remove", metavar="UID", help="Revoke Admin from this user.")
-    p_admin.add_argument("--conn", metavar="URI",
-                         help="Metadata DB URI override, e.g. postgresql://USER:PW@HOST:PORT/DBNAME.")
-    p_admin.set_defaults(func=_cmd_admin)
 
     p_ws_list = sub.add_parser(
         "workspace-list",
@@ -1468,7 +1266,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "workspace-show",
         help="Print a user's workspace root (read-only).",
     )
-    p_ws_show.add_argument("username", help="Airflow LDAP username.")
+    p_ws_show.add_argument("username", help="Airflow username.")
     p_ws_show.add_argument(
         "--name", default="default",
         help="Workspace name to resolve (default: 'default').",
@@ -1511,7 +1309,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "workspace-set",
         help="Set or update a named workspace root for a user.",
     )
-    p_ws_set.add_argument("username", help="Airflow LDAP username.")
+    p_ws_set.add_argument("username", help="Airflow username.")
     p_ws_set.add_argument(
         "workspace_root",
         help="Absolute path to the workspace root. The Airflow daemon "

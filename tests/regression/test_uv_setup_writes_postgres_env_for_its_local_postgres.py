@@ -94,7 +94,7 @@ def _setup(tmp, tools, answers, gpg=fake_postgres.GPG) -> str:
     (tmp / "private").mkdir(mode=0o700, exist_ok=True)
     path = (str(tmp / "bin"), fake_postgres.postgres(tmp / "pgbin", log), tools)
     env = {"HOME": str(home), "USER": "alice", "TMPDIR": str(tmp), "PATH": os.pathsep.join(path),
-           "SLEDGE_NO_LDAP": "1", "SLEDGE_NO_PLUGINS": "1",
+           "SLEDGE_NO_PLUGINS": "1",
            "SLEDGE_SECRETS_FILE": str(tmp / "private" / "airflow-secrets.env.gpg")}
     import pty
     master, slave = pty.openpty()

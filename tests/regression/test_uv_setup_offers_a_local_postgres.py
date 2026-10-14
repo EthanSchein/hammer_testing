@@ -42,7 +42,7 @@ def _install(tmp_path, tools, extra_path=(), answers=None):
     secrets = tmp_path / "secrets.env.gpg"
     env = {"HOME": str(home), "USER": "alice", "TMPDIR": str(tmp_path),
            "PATH": os.pathsep.join((str(tmp_path / "bin"), *extra_path, tools)),
-           "SLEDGE_NO_LDAP": "1", "SLEDGE_NO_PLUGINS": "1", "SLEDGE_SECRETS_FILE": str(secrets)}
+           "SLEDGE_NO_PLUGINS": "1", "SLEDGE_SECRETS_FILE": str(secrets)}
     argv = ["bash", str(checkout / "scripts" / "uv_setup.sh")]
     if answers is None:
         res = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env, timeout=120)

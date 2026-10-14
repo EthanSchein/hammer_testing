@@ -209,7 +209,6 @@ def test_the_launch_words_choose_the_stack(tmp_path, monkeypatch, capsys, word, 
     monkeypatch.setenv("SLEDGE_LITE", "")
     monkeypatch.delenv("SLEDGE_LITE")
     monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path))
-    monkeypatch.setenv("SLEDGE_2FA", "1")
     monkeypatch.setenv("SLEDGE_DRYRUN", "1")
     monkeypatch.setattr(sledgehammer_cli.sys, "argv", ["sledgehammer", word])
     assert sledgehammer_cli.main() == 0

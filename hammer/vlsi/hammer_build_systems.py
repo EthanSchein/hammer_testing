@@ -650,7 +650,6 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
         ENV_CONFIGS = [{env_str}]
         PROJ_CONFIGS = [{proj_str}]
 
-        # Grafted from the sledgehammer (ldap-auth) branch.
         DESIGN_NAME = "{design_name}"
         GEN_USER = "{gen_user}"
         # Tools dropdown {{tool: [configs]}}: make-dag fills this from
@@ -696,8 +695,7 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
             \"\"\"
             Spawns a clean python subprocess executing the target stage.
 
-            Grafted from the sledgehammer (ldap-auth) branch -- all three extras
-            funnel through here, the one chokepoint every stage calls:
+            The one chokepoint every stage calls:
               * per-user workspace: resolve the triggering user's OBJ_DIR at run
                 time so two users never share a build dir
               * cache provenance: the resolver also pins HAMMER_AIRFLOW_* env that
@@ -1162,7 +1160,7 @@ def hammer_dag():
     # ALL_DONE leaf instead, every failed run would show up green.
     @task(task_id="cache_summary_", trigger_rule=TriggerRule.ALL_DONE)
     def cache_summary_(**context):
-        # Grafted (ldap-auth): print the per-run PD cache savings summary
+        # Print the per-run PD cache savings summary
         # (wall + CPU time saved) and clear the run's event log.
         run_id = None
         try:

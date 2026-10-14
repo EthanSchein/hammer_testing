@@ -96,11 +96,6 @@ def test_other_errors_are_not_called_unavailable(fake_driver, monkeypatch) -> No
         pd_store_cli.main(["workspace-list"])
 
 
-def test_admin_without_the_driver_is_one_line(no_driver, capsys) -> None:
-    assert pd_store_cli.main(["admin", "--conn", "postgresql://u:p@127.0.0.1:1/airflow"]) == 1
-    assert capsys.readouterr().err.startswith("studio: database unavailable: psycopg2 is not installed")
-
-
 def test_a_server_side_error_keeps_its_traceback(fake_driver, monkeypatch) -> None:
     def timed_out(*a, **kw):
         e = fake_driver("canceling statement due to statement timeout")

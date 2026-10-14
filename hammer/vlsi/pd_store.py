@@ -118,8 +118,6 @@ WORKSPACE_TABLE = "user_workspaces"
 FQ_MASTER = f"{SCHEMA_NAME}.{MASTER_TABLE}"
 FQ_BLOB = f"{SCHEMA_NAME}.{BLOB_TABLE}"
 FQ_WORKSPACE = f"{SCHEMA_NAME}.{WORKSPACE_TABLE}"
-WHITELIST_TABLE = "login_whitelist"
-FQ_WHITELIST = f"{SCHEMA_NAME}.{WHITELIST_TABLE}"
 NOTIFY_EMAIL_TABLE = "user_notify_email"
 FQ_NOTIFY_EMAIL = f"{SCHEMA_NAME}.{NOTIFY_EMAIL_TABLE}"
 
@@ -630,16 +628,9 @@ CREATE INDEX IF NOT EXISTS idx_{BLOB_TABLE}_stage ON {FQ_BLOB} (stage);
 CREATE INDEX IF NOT EXISTS idx_{BLOB_TABLE}_owner ON {FQ_BLOB} (owner);
 CREATE INDEX IF NOT EXISTS idx_{MASTER_TABLE}_owner ON {FQ_MASTER} (owner);
 
-CREATE TABLE IF NOT EXISTS {FQ_WHITELIST} (
-    uid      TEXT PRIMARY KEY,
-    added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    added_by TEXT NOT NULL DEFAULT current_user
-);
-
--- Addresses users opted into for flow-completion emails. Unlike the whitelist
--- this one is user-writable: each person sets their own through the
--- self-service web form, which scopes the write to their logged-in identity.
--- So it keeps the normal group grant and gets no admin-only REVOKE below.
+-- Addresses users opted into for flow-completion emails. Each person sets their
+-- own through the self-service web form, which scopes the write to their
+-- logged-in identity.
 CREATE TABLE IF NOT EXISTS {FQ_NOTIFY_EMAIL} (
     uid        TEXT PRIMARY KEY,
     email      TEXT NOT NULL,
@@ -758,9 +749,6 @@ BEGIN
         -- BIGSERIAL ids: inserts into the ledger tables need nextval on their sequences
         EXECUTE 'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {SCHEMA_NAME} TO {SLEDGEHAMMER_GROUP}';
         EXECUTE 'ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_NAME} GRANT USAGE, SELECT ON SEQUENCES TO {SLEDGEHAMMER_GROUP}';
-        -- login_whitelist is admin-only: cache users keep SELECT (the login
-        -- gate reads it) but only the table owner can change who can log in.
-        EXECUTE 'REVOKE INSERT, UPDATE, DELETE ON {FQ_WHITELIST} FROM {SLEDGEHAMMER_GROUP}';
     END IF;
 END $$;
 """
@@ -835,7 +823,7 @@ def grant_schema_access(role: str) -> None:
 
     The group-role path (sledgehammer_users) needs CREATEROLE to exist; on
     clusters where nobody has it (the BWRC one), each teammate gets these
-    direct grants instead. The login whitelist stays admin-only either way.
+    direct grants instead.
     """
     _valid_role(role)
     with _connect() as conn:
@@ -847,18 +835,16 @@ def grant_schema_access(role: str) -> None:
                 f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {SCHEMA_NAME} TO {role}",
                 f"ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_NAME} GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO {role}",
                 f"ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_NAME} GRANT USAGE, SELECT ON SEQUENCES TO {role}",
-                f"REVOKE INSERT, UPDATE, DELETE ON {FQ_WHITELIST} FROM {role}",
             ):
                 cur.execute(sql)
         conn.commit()
 
 
-def onboard_user(role: str, whitelist: bool = True) -> List[str]:
+def onboard_user(role: str) -> List[str]:
     """Everything a new teammate needs, idempotently. Returns action log.
 
     1. their Airflow metadata database (airflow_<role>)
     2. direct grants on the hammer_poc schema (cache, ledger, checkpoints)
-    3. the login whitelist entry (cross-instance UI login)
     """
     _valid_role(role)
     actions: List[str] = []
@@ -869,8 +855,7 @@ def onboard_user(role: str, whitelist: bool = True) -> List[str]:
             cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (role,))
             if not cur.fetchone():
                 raise RuntimeError(
-                    f"no Postgres role {role!r} on the cluster; have them log "
-                    "in once so LDAP creates it, or ask the DB admin to CREATE ROLE")
+                    f"no Postgres role {role!r} on the cluster; ask the DB admin to CREATE ROLE")
             db = f"airflow_{role}"
             cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db,))
             if cur.fetchone():
@@ -881,13 +866,7 @@ def onboard_user(role: str, whitelist: bool = True) -> List[str]:
     finally:
         conn.close()
     grant_schema_access(role)
-    actions.append("hammer_poc access: granted (login whitelist stays admin-only)")
-    if whitelist:
-        if is_whitelisted(role):
-            actions.append("login whitelist: already listed")
-        else:
-            whitelist_add(role)
-            actions.append("login whitelist: added")
+    actions.append("hammer_poc access: granted")
     return actions
 
 
@@ -915,60 +894,6 @@ def revoke_access(role: str) -> None:
         with conn.cursor() as cur:
             cur.execute(f"REVOKE {SLEDGEHAMMER_GROUP} FROM {role}")
         conn.commit()
-    finally:
-        conn.close()
-
-
-def whitelist_add(uid: str) -> None:
-    """Add an LDAP uid to the Airflow login whitelist (idempotent)."""
-    uid = (uid or "").strip().lower()
-    conn = _connect()
-    try:
-        _ensure_schema(conn, quiet=True)
-        with conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO {FQ_WHITELIST} (uid) VALUES (%s) ON CONFLICT (uid) DO NOTHING",
-                (uid,),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def whitelist_remove(uid: str) -> None:
-    """Remove an LDAP uid from the Airflow login whitelist."""
-    uid = (uid or "").strip().lower()
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {FQ_WHITELIST} WHERE uid = %s", (uid,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def whitelist_list() -> list:
-    """Return [(uid, added_at, added_by), ...] for everyone on the login whitelist."""
-    conn = _connect()
-    try:
-        _ensure_schema(conn, quiet=True)
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT uid, added_at, added_by FROM {FQ_WHITELIST} ORDER BY uid")
-            return cur.fetchall()
-    finally:
-        conn.close()
-
-
-def is_whitelisted(uid: str) -> bool:
-    """True if uid is on the login whitelist -- the Airflow auth gate calls this."""
-    uid = (uid or "").strip().lower()
-    if not uid:
-        return False
-    conn = _connect()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(f"SELECT 1 FROM {FQ_WHITELIST} WHERE uid = %s", (uid,))
-            return cur.fetchone() is not None
     finally:
         conn.close()
 

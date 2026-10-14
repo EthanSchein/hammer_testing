@@ -18,7 +18,6 @@ def test_launch_does_not_pass_positionals_to_venv_sh(tmp_path, monkeypatch) -> N
     monkeypatch.setattr(sledgehammer_cli, "LAUNCHER", str(launcher))
     monkeypatch.setattr(sledgehammer_cli.sys, "argv", ["sledgehammer", "up", "--port", "a b"])
     monkeypatch.delenv("SLEDGE_DRYRUN", raising=False)
-    monkeypatch.setenv("SLEDGE_2FA", "1")
     monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path))
     captured = []
 

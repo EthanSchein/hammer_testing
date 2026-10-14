@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """
-Drop-in replacement for `airflow standalone` that respects the configured
-auth_manager (e.g. FabAuthManager for LDAP) instead of forcing
-SimpleAuthManager.
-
-Upstream `airflow standalone` overrides AIRFLOW__CORE__AUTH_MANAGER on every
-launch, regardless of what's in airflow.cfg, which makes LDAP login
-impossible from the standalone command. This script reuses everything else
-about StandaloneCommand (subprocess management, colored output, ready
-detection, signal handling) and just skips the auth_manager override.
+Starts this checkout's Airflow stack: `airflow standalone`'s components for the
+full stack, or scripts/sledge-lite-supervisor.sh for the lite one. Either way
+the UI has one login, the user who launched it, with its password in
+.sledgehammer/airflow-ui-password.json.
 
 Usage:
     source ./venv.sh
@@ -35,7 +30,9 @@ if os.path.exists(_venv_py) and os.path.realpath(_venv_py) != os.path.realpath(s
 if os.path.isdir(os.path.dirname(_venv_py)):
     os.environ["PATH"] = os.path.dirname(_venv_py) + os.pathsep + os.environ.get("PATH", "")
 
+import json
 import re
+import secrets
 import shutil
 import socket
 import subprocess
@@ -381,24 +378,12 @@ def _load_launch_settings() -> None:
 def _pin_airflow_home() -> None:
     """Point AIRFLOW_HOME at this checkout before Airflow is imported.
 
-    Airflow finds airflow.cfg and webserver_config.py via AIRFLOW_HOME. Launch
-    from a shell that never ran ``export AIRFLOW_HOME=$(pwd)`` and it falls back
-    to ~/airflow -- the stock defaults: SimpleAuthManager on port 8080, with the
-    LDAP login and webserver_config.py silently ignored. This launcher only ever
-    runs this checkout, so pin it and remove that footgun.
+    Airflow finds airflow.cfg via AIRFLOW_HOME. Launch from a shell that never
+    ran ``export AIRFLOW_HOME=$(pwd)`` and it falls back to ~/airflow -- the
+    stock defaults on port 8080, without this checkout's settings. This
+    launcher only ever runs this checkout, so pin it and remove that footgun.
     """
     os.environ["AIRFLOW_HOME"] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
-def _default_2fa() -> None:
-    """Turn the TOTP second factor on by default for this deployment.
-
-    The login enforces 2FA only when SLEDGE_2FA=1 (webserver_config.install_2fa).
-    Default it on here so every launch requires it -- including the `sledgehammer`
-    shell helper that just sources venv.sh and execs this script, which otherwise
-    wouldn't set the flag. Launch with SLEDGE_2FA=0 to fall back to plain LDAP.
-    """
-    os.environ.setdefault("SLEDGE_2FA", "1")
 
 
 def _default_pd_cache() -> None:
@@ -421,6 +406,45 @@ def _default_cache_db() -> None:
         print(f"[secrets] WARNING: could not take the cache DB host from the Airflow conn: {e}")
 
 
+UI_PASSWORD_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                ".sledgehammer", "airflow-ui-password.json")
+
+
+def _ui_owner() -> str:
+    """The UI's one login: the launching user, named the way generated DAGs name their owner."""
+    import getpass
+    return os.environ.get("USER") or getpass.getuser()
+
+
+def _simple_login() -> None:
+    """Make the launching user the UI's only login, with a password in a file only they can read."""
+    owner = _ui_owner()
+    os.environ["AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS"] = f"{owner}:admin"
+    path = os.environ.setdefault("AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE", UI_PASSWORD_FILE)
+    folder = os.path.dirname(path)
+    os.makedirs(folder, exist_ok=True)
+    if path == UI_PASSWORD_FILE:
+        os.chmod(folder, 0o700)
+    try:
+        with open(path) as f:
+            passwords = json.load(f)
+    except (OSError, ValueError):
+        passwords = {}
+    if not isinstance(passwords, dict):
+        passwords = {}
+    if not passwords.get(owner):
+        passwords[owner] = secrets.token_urlsafe(18)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(passwords, f)
+    os.chmod(path, 0o600)
+
+
+def _login_line() -> str:
+    return (f"Log in as {_ui_owner()}; your password is in "
+            f"{os.environ['AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE']} (edit that file to change it).")
+
+
 def _lite() -> bool:
     """True for the single-user lite stack (`sledgehammer lite` or SLEDGE_LITE=1)."""
     return os.environ.get("SLEDGE_LITE", "").strip().lower() not in ("", "0", "false", "no", "off")
@@ -438,12 +462,12 @@ def _default_lite_limits() -> None:
         os.environ["SLEDGE_SET_MALLOC_ARENA_MAX"] = "1"
 
 
-# Pin AIRFLOW_HOME first so the right airflow.cfg/webserver_config.py are read,
+# Pin AIRFLOW_HOME first so the right airflow.cfg is read,
 # then load secrets, THEN import Airflow: importing it reads sql_alchemy_conn
 # right away, so the environment has to be populated first or it crashes on a
 # blank conn.
 _pin_airflow_home()
-_default_2fa()
+_simple_login()
 _default_pd_cache()
 _setup_secrets()
 _load_postgres_target()
@@ -462,33 +486,10 @@ from airflow.executors import executor_constants
 
 
 class HammerStandalone(StandaloneCommand):
-    """StandaloneCommand without the SimpleAuthManager-specific behaviour."""
-
-    def calculate_env(self):
-        env = dict(os.environ)
-
-        # Keep the LocalExecutor override (standalone is single-machine by design).
-        executor_class, _ = ExecutorLoader.import_default_executor_cls()
-        if not executor_class.is_local:
-            self.print_output("standalone", "Forcing executor to LocalExecutor")
-            env["AIRFLOW__CORE__EXECUTOR"] = executor_constants.LOCAL_EXECUTOR
-
-        # Deliberately DO NOT override AIRFLOW__CORE__AUTH_MANAGER.
-        # Whatever's in airflow.cfg (FabAuthManager, SimpleAuthManager, ...) wins.
-        self.print_output("standalone", "Respecting configured auth_manager: not forcing SimpleAuthManager")
-        return env
+    """StandaloneCommand that says where the UI login is and how to reach the UI."""
 
     def find_user_info(self):
-        """
-        Upstream's find_user_info() tries to print the SimpleAuthManager's
-        auto-generated admin password. FabAuthManager has no such file (users
-        come from LDAP), so we just print a hint and return.
-        """
-        self.print_output(
-            "standalone",
-            "Auth manager is not SimpleAuthManager: skipping admin-password lookup. "
-            "Log in via your configured auth backend (e.g. LDAP).",
-        )
+        self.print_output("standalone", _login_line())
 
     def print_ready(self):
         # Upstream just prints "Airflow is ready" with no URL; tack on the actual
@@ -662,191 +663,17 @@ def _wait_for_stale(newest) -> bool:
     return True
 
 
-def _refuse_if_whitelist_empty() -> None:
-    """Refuse to start if nobody is on the login whitelist.
-
-    webserver_config.py rejects any LDAP login that isn't on the
-    hammer_poc.login_whitelist table, so an empty whitelist with no
-    AIRFLOW_ALLOWED_UIDS bootstrap would be a server nobody can log into. Bail
-    with instructions instead. Manage the list with ``studio whitelist``.
-    """
-    import getpass
-    try:
-        owner = getpass.getuser().strip().lower()
-    except Exception:
-        owner = ""
-    bootstrap = ({owner} if owner else set()) | {
-        u.strip().lower()
-        for u in os.environ.get("AIRFLOW_ALLOWED_UIDS", "").split(",")
-        if u.strip()
-    }
+def _prepare_cache_schema() -> None:
+    """Create or upgrade the PD cache tables now, so the first task or page does not wait on it."""
     try:
         from hammer.vlsi import pd_store
-        allowed = pd_store.whitelist_list()
+        conn = pd_store._connect()
+        try:
+            pd_store._ensure_schema(conn, quiet=True)
+        finally:
+            conn.close()
     except Exception as e:
-        print(f"[whitelist] WARNING: couldn't check the login whitelist ({e}).")
-        return  # fail-open: a transient DB hiccup shouldn't block startup
-    if not allowed and not bootstrap:
-        sys.exit(
-            "[whitelist] ERROR: nobody can log in -- whitelist empty, no owner, no "
-            "AIRFLOW_ALLOWED_UIDS.\n        Add someone: studio whitelist <uid>")
-    if not allowed:
-        print(f"[whitelist] DB whitelist is empty -- only the owner ({owner or '?'}) "
-              f"can log in. Add teammates with: studio whitelist <uid>")
-    else:
-        print(f"[whitelist] {len(allowed)} user(s) on the whitelist; "
-              f"owner ({owner or '?'}) always allowed.")
-
-
-def _promote_owner_to_admin() -> None:
-    """Make sure the OS user running this instance has the FAB Admin role.
-
-    LDAP registration hands out the plain User role, and the login-time
-    promotion in webserver_config.py depends on FAB internals; this is the
-    belt-and-braces version: plain SQL against this instance's own metadata
-    database, which the launching user owns. Idempotent, runs every start.
-    Before the owner's first login there is no user row yet; the login hook
-    covers that, and the next restart covers the login hook failing.
-    """
-    import getpass
-    try:
-        owner = getpass.getuser().strip().lower()
-    except Exception:
-        return
-    conn_str = os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")
-    if not conn_str.startswith("postgresql"):
-        return
-    try:
-        conn = _connect_airflow_db()
-    except ImportError as e:
-        print(f"[roles] couldn't check the owner's role ({e}).")
-        return
-    except Exception:
-        print("[roles] couldn't check the owner's role: could not connect to Airflow's database; "
-              "check it with: sledgehammer postgres show")
-        return
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM ab_user WHERE lower(username) = %s", (owner,))
-            u = cur.fetchone()
-            if not u:
-                print(f"[roles] no user row for {owner!r} yet; the first login creates "
-                      "it (and should self-promote; restart once if the Admin menu is missing).")
-                return
-            cur.execute("SELECT id FROM ab_role WHERE name = %s", ("Admin",))
-            r = cur.fetchone()
-            if not r:
-                print("[roles] no Admin role in this metadata DB; skipping.")
-                return
-            cur.execute("SELECT 1 FROM ab_user_role WHERE user_id = %s AND role_id = %s",
-                        (u[0], r[0]))
-            if cur.fetchone():
-                print(f"[roles] instance owner {owner!r} already has Admin.")
-            else:
-                cur.execute("INSERT INTO ab_user_role (id, user_id, role_id) "
-                            "VALUES (nextval('ab_user_role_id_seq'), %s, %s)",
-                            (u[0], r[0]))
-                conn.commit()
-                print(f"[roles] promoted instance owner {owner!r} to Admin.")
-    except Exception as e:
-        print(f"[roles] owner promotion skipped ({e}).")
-    finally:
-        conn.close()
-
-
-MEMBER_ROLE = "Member"
-# Members see the whole sidebar; the underlying APIs still enforce their own
-# permissions, so an admin-only page answers "permission denied" instead of
-# being invisible. can_read on Plugins is the one data grant: the plugin nav
-# items (pgadmin, notify email, feedback form) come from the plugins API.
-MEMBER_PERMS = (
-    ("can_read", "Plugins"),
-    ("menu_access", "Assets"),
-    ("menu_access", "Audit Logs"),
-    ("menu_access", "Configurations"),
-    ("menu_access", "Connections"),
-    ("menu_access", "DAGs"),
-    ("menu_access", "Documentation"),
-    ("menu_access", "HITL Detail"),
-    ("menu_access", "Plugins"),
-    ("menu_access", "Pools"),
-    ("menu_access", "Providers"),
-    ("menu_access", "Variables"),
-    ("menu_access", "XComs"),
-    # the Security section links (FAB pages reject non-admins on entry)
-    ("menu_access", "List Users"),
-    ("menu_access", "List Roles"),
-    ("menu_access", "Actions"),
-    ("menu_access", "Resources"),
-    ("menu_access", "Permission Pairs"),
-)
-
-
-def _ensure_member_role() -> None:
-    """Give non-admin users the plugin features (pgadmin link, notify email,
-    feedback form...).
-
-    The React UI only shows plugin nav items to users who may read Plugins,
-    which the stock User role can't. FAB resets the built-in roles at every
-    boot, so the extra rights live on a custom Member role (sync leaves those
-    alone), attached here to every user that isn't an Admin. Idempotent.
-    """
-    conn_str = os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")
-    if not conn_str.startswith("postgresql"):
-        return
-    try:
-        conn = _connect_airflow_db()
-    except ImportError as e:
-        print(f"[roles] couldn't check the Member role ({e}).")
-        return
-    except Exception:
-        print("[roles] couldn't check the Member role: could not connect to Airflow's database; "
-              "check it with: sledgehammer postgres show")
-        return
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id FROM ab_role WHERE name = %s", (MEMBER_ROLE,))
-            row = cur.fetchone()
-            if row:
-                role_id = row[0]
-            else:
-                cur.execute("INSERT INTO ab_role (id, name) VALUES (nextval('ab_role_id_seq'), %s) RETURNING id", (MEMBER_ROLE,))
-                role_id = cur.fetchone()[0]
-                print(f"[roles] created the {MEMBER_ROLE} role.")
-            for action, resource in MEMBER_PERMS:
-                cur.execute(
-                    """SELECT pv.id FROM ab_permission_view pv
-                       JOIN ab_permission p ON p.id = pv.permission_id
-                       JOIN ab_view_menu vm ON vm.id = pv.view_menu_id
-                       WHERE p.name = %s AND vm.name = %s""", (action, resource))
-                pv = cur.fetchone()
-                if not pv:
-                    continue  # FAB hasn't registered it yet; next boot catches it
-                cur.execute(
-                    """INSERT INTO ab_permission_view_role (id, permission_view_id, role_id)
-                       SELECT nextval('ab_permission_view_role_id_seq'), %s, %s
-                       WHERE NOT EXISTS (SELECT 1 FROM ab_permission_view_role
-                       WHERE permission_view_id = %s AND role_id = %s)""",
-                    (pv[0], role_id, pv[0], role_id))
-            cur.execute(
-                """INSERT INTO ab_user_role (id, user_id, role_id)
-                   SELECT nextval('ab_user_role_id_seq'), u.id, %s FROM ab_user u
-                   WHERE NOT EXISTS (SELECT 1 FROM ab_user_role ur
-                                     JOIN ab_role r ON r.id = ur.role_id
-                                     WHERE ur.user_id = u.id AND r.name = 'Admin')
-                     AND NOT EXISTS (SELECT 1 FROM ab_user_role ur2
-                                     WHERE ur2.user_id = u.id AND ur2.role_id = %s)""",
-                (role_id, role_id))
-            n = cur.rowcount
-            conn.commit()
-            if n:
-                print(f"[roles] attached {MEMBER_ROLE} to {n} member user(s).")
-            else:
-                print(f"[roles] {MEMBER_ROLE} role up to date.")
-    except Exception as e:
-        print(f"[roles] Member role setup skipped ({e}).")
-    finally:
-        conn.close()
+        print(f"[cache] WARNING: could not prepare the cache database ({e}).")
 
 
 LITE_SUPERVISOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sledge-lite-supervisor.sh")
@@ -879,12 +706,11 @@ def _lite_main():
     from airflow.utils import db
     print("[lite] checking the database is initialized")
     db.initdb()
-    _refuse_if_whitelist_empty()
-    _promote_owner_to_admin()
-    _ensure_member_role()
+    _prepare_cache_schema()
     host = socket.getfqdn()
     print("[lite] starting the scheduler, dag-processor and api-server (no triggerer, log server or pgAdmin)")
     print(f"[lite] Web UI  : http://localhost:{port}   (running on {host})")
+    print(f"[lite] {_login_line()}")
     print(f"[lite] Tunnel from your laptop: ssh -L {port}:localhost:{port} {os.environ.get('USER', '<you>')}@{host}")
     sys.stdout.flush()
     sys.stderr.flush()
@@ -896,9 +722,7 @@ def main():
         return _lite_main()
     _refuse_if_port_taken(_configure_port())
     _refuse_if_scheduler_running()
-    _refuse_if_whitelist_empty()
-    _promote_owner_to_admin()
-    _ensure_member_role()
+    _prepare_cache_schema()
     _start_pgadmin()
     HammerStandalone().run()
 

@@ -75,7 +75,7 @@ def _resolve_workspace_obj_dir(context, design, default_obj_dir=None, gen_user=N
     """
     Resolve and set OBJ_DIR in os.environ for the user who triggered this DAG run.
 
-    Looks up the triggering user (the Airflow LDAP username), then resolves
+    Looks up the triggering user (the Airflow username), then resolves
     their per-user workspace root from ``hammer_poc.user_workspaces`` and pins
     ``OBJ_DIR`` to ``<workspace_root>/<design>``.
 

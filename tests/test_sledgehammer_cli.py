@@ -87,7 +87,6 @@ def test_launch_sources_venv_sh_from_the_checkout_and_forwards_args(tmp_path, mo
     monkeypatch.setattr(sledgehammer_cli, "LAUNCHER", str(launcher))
     monkeypatch.setattr(sledgehammer_cli.sys, "argv", ["sledgehammer", "up", "--port", "a b"])
     monkeypatch.delenv("SLEDGE_DRYRUN", raising=False)
-    monkeypatch.setenv("SLEDGE_2FA", "1")
     monkeypatch.setenv("AIRFLOW_HOME", str(tmp_path))
     captured = []
 
