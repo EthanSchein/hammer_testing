@@ -41,6 +41,12 @@ import os
 import subprocess
 import sys
 import time
+import getpass
+import argparse
+import requests
+import sys
+
+
 
 # hammer/shell/sledgehammer_cli.py -> repo root is three levels up.
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,6 +54,7 @@ LAUNCHER = os.path.join(REPO, "scripts", "airflow-standalone-ldap.py")
 # First-arg values that mean "bring the server up" rather than an airflow passthrough.
 LAUNCH_WORDS = {"", "standalone", "up", "start", "serve"}
 HELP_WORDS = {"-h", "--help", "help"}
+SIDECAR_URL = "http://127.0.0.1:8000/api/v1/dags"
 
 
 def _venv_bin(name: str) -> str:
@@ -328,6 +335,23 @@ def _no_dag_exit(design, dag_file, dags_src):
         f"  Generate it first, the same way you always have:\n"
         f"      cd <vlsi dir> && make buildfile")
 
+def get_user_context(is_bot=False):
+    if is_bot:
+        return {
+            "execution_identity": "sledgehammer-worker",
+            "run_as_uid": 999, # REPLACE THIS WITH SERVICE ACCT
+            "run_as_gid": 999, # REPLACE THIS WITH SERVICE ACCT
+            "is_bot": True
+        }
+    
+    # Capture local Linux user info
+    return {
+        "execution_identity": getpass.getuser(),
+        "run_as_uid": os.getuid(),
+        "run_as_gid": os.getgid(),
+        "is_bot": False
+    }
+
 
 def _cmd_run(args) -> int:
     import argparse
@@ -366,6 +390,8 @@ def _cmd_run(args) -> int:
     p.add_argument("--run-id")
     p.add_argument("--no-wait", action="store_true",
                    help="trigger and return; do not stream the run")
+    p.add_argument("--is-bot", dest="is_bot", default=False, action='store_true',
+                    help="Run job owned by the bot user instead of the local requester.")
     a = p.parse_args(args)
 
     actions = [x.replace("-", "_") for x in a.actions]
@@ -423,6 +449,9 @@ def _cmd_run(args) -> int:
 
     _airflow("dags", "unpause", dag_id)
     conf = {s: True for s in actions}
+    conf["user_data"] = {
+        "conf": get_user_context(is_bot=a.is_bot)
+    }
     if a.module:
         conf["modules"] = a.module
     if a.force or a.forceall:
@@ -513,8 +542,47 @@ def _cmd_status(args, list_only=False) -> int:
                 print(f"  {t.replace('module_', ''):44s} {s}")
     return 0
 
+def register_dag(args):
+    payload = {
+        "dag_id": args.dag_id,
+        "project_configs": args.configs,
+        "default_targets": args.targets
+    }
+    
+    # Add your auth token logic here if required
+    headers = {"Content-Type": "application/json"}
+    
+    try:
+        resp = requests.post(f"{SIDECAR_URL}/create", json=payload, headers=headers)
+        if resp.status_code == 200:
+            print(f"Success: Registered DAG '{args.dag_id}'")
+        elif resp.status_code == 409:
+            print(f"Error: DAG '{args.dag_id}' already exists. Use 'modify' instead.")
+        else:
+            print(f"Failed ({resp.status_code}): {resp.text}")
+    except requests.exceptions.ConnectionError:
+        print("Error: Could not connect to Sledgehammer Bot sidecar.")
+        sys.exit(1)
 
 def main() -> int:
+    parser = argparse.ArgumentParser(prog="sledgehammer")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # 'dag' subcommand group
+    dag_parser = subparsers.add_parser("dag", help="Manage Airflow DAGs")
+    dag_sub = dag_parser.add_subparsers(dest="dag_cmd", required=True)
+
+    # 'dag register'
+    register_p = dag_sub.add_parser("register", help="Register a new SoC DAG")
+    register_p.add_argument("dag_id", help="Name of the DAG (e.g., my_soc_build)")
+    register_p.add_argument("-c", "--configs", nargs="+", required=True, help="Paths to hammer project YAMLs")
+    register_p.add_argument("-t", "--targets", nargs="+", default=["synth", "par"], help="Default flow targets")
+    register_p.set_defaults(func=register_dag)
+
+    args = parser.parse_args()
+    if hasattr(args, "func"):
+        args.func(args)
+
     args = sys.argv[1:]
     sub = args[0] if args else ""
 

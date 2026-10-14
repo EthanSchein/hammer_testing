@@ -18,6 +18,8 @@ import re
 import os
 import subprocess
 import sys
+import getpass
+import requests
 
 import ruamel.yaml
 
@@ -1741,6 +1743,7 @@ class CLIDriver:
             driver.log.warning(f"Skip-path: could not refresh {prefix}-output-full.json ({e}).")
         return output
 
+
     def args_to_driver(self, args: dict,
                        default_options: Optional[HammerDriverOptions] = None) -> \
             Tuple[HammerDriver, List[str]]:
@@ -1782,6 +1785,7 @@ class CLIDriver:
         # Load project configs.
         project_configs = parse_optional_file_list_from_args(args['configs'], append_error_func=errors.append)  #Andre tmp
         options = options._replace(project_configs=list(project_configs))
+
 
         # Log file.
         log = args["log"]
