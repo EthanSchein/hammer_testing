@@ -26,6 +26,7 @@ import getpass
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -51,6 +52,7 @@ MERGE_STEPS = '"Merging back into the shared database" in readme_documents/LOCAL
 SHELL = "this shell's environment"
 SERVER = "the server sledgehammer starts"
 COMMANDS = "the other sledgehammer commands"
+SWITCH_LOCAL = "Switch SledgeHammer to your local Postgres? [y/N]: "
 
 
 class Target(NamedTuple):
@@ -381,6 +383,21 @@ def _local_settings(pg_dir: str) -> Optional[Dict[str, str]]:
     return dict(line.split("=", 1) for line in res.stdout.splitlines() if "=" in line)
 
 
+def _port_busy(port: int) -> bool:
+    for host in ("127.0.0.1", "::1"):
+        try:
+            socket.create_connection((host, port), timeout=1).close()
+            return True
+        except (OSError, OverflowError):
+            pass
+    return False
+
+
+def _free_port(first: int) -> int:
+    """The port sledge-local-postgres.sh setup gives a new cluster: first, or the next one nothing listens on."""
+    return next((port for port in range(first, first + 101) if not _port_busy(port)), first)
+
+
 def _password_source(session: _Session, view: _View, fields: Dict) -> str:
     if "password" in fields:
         return f"from {session.label(view, 'password', fields['password'][1])} (not shown)"
@@ -486,7 +503,7 @@ def _moved(a: Tuple, b: Tuple) -> bool:
     return not _same_server(a[:2], b[:2]) or a[2] != b[2]
 
 
-def _plan(session: _Session, new: Target) -> Optional[str]:
+def _plan(session: _Session, new: Target, takes_over: Optional[str] = None) -> Optional[str]:
     """Print what the switch changes and its warnings; return what stays behind, or None when nothing moves."""
     after = session.views({**session.secrets, CONN: new.conn("-"), PASSWORD: "-"})
     old = pd_store._parse_conn_uri(session.secrets.get(CONN, ""))
@@ -510,21 +527,30 @@ def _plan(session: _Session, new: Target) -> Optional[str]:
     _warn(session, after)
     left = []
     airflow_was = (old.get("host"), old.get("port"), old.get("dbname"))
-    if old and _moved(airflow_was, (new.host, new.port, new.airflow_db)):
+    if old and (takes_over or _moved(airflow_was, (new.host, new.port, new.airflow_db))):
         left.append(("DAG run history", "stays", airflow_was))
     cache_was = tuple(cache[field][0] for field in ("host", "port", "dbname"))
-    if _moved(cache_was, tuple(then[field][0] for field in ("host", "port", "dbname"))):
+    cache_set = any(cache[field][1] != "default" for field in ("host", "port", "dbname"))
+    if (takes_over and cache_set) or _moved(cache_was, tuple(then[field][0] for field in ("host", "port", "dbname"))):
         left.append(("cached results", "stay", cache_was))
     if not left:
         return None
+    here = _server(new.host, new.port)
     on_new = [_same_server(was[:2], (new.host, new.port)) for _, _, was in left]
-    places = [_server(*was[:2]) + (f"/{was[2]}" if same else "") for (_, _, was), same in zip(left, on_new)]
+    if takes_over:
+        places = [f"the Postgres that served {here} before" if same else _server(*was[:2])
+                  for (_, _, was), same in zip(left, on_new)]
+    else:
+        places = [_server(*was[:2]) + (f"/{was[2]}" if same else "") for (_, _, was), same in zip(left, on_new)]
     if len(left) == 2 and places[0] == places[1]:
         stay = f"DAG run history and cached results stay on {places[0]}"
     else:
         stay = " and ".join(f"{what} {verb} on {place}" for (what, verb, _), place in zip(left, places))
-    if not all(on_new):
-        fresh = f"{_server(new.host, new.port)} starts empty unless it already holds them"
+    if takes_over and any(on_new):
+        fresh = (f"Your local Postgres in {takes_over} starts empty unless it already holds them, and it takes over "
+                 f"{here}, so the old one cannot start while yours runs")
+    elif not all(on_new):
+        fresh = f"{here} starts empty unless it already holds them"
     elif len(left) == 1:
         fresh = "The new database starts empty unless it already holds them"
     else:
@@ -592,6 +618,13 @@ def _holds(secrets: Dict[str, str], new: Target, password: str) -> bool:
             and secrets.get(PASSWORD) == password)
 
 
+def _another_server(secrets: Dict[str, str], new: Target, password: Optional[str]) -> bool:
+    """Whether the secrets name new's address with a password that this local Postgres does not take."""
+    old = pd_store._parse_conn_uri(secrets.get(CONN, ""))
+    return (bool(old) and _same_server((old.get("host"), old.get("port")), (new.host, new.port))
+            and old.get("password") != password)
+
+
 def _apply(session: _Session, new: Target, password: str, password_file: Optional[str] = None,
            pg_dir: Optional[str] = None, rewrite: bool = True) -> int:
     session.applying = True
@@ -626,6 +659,10 @@ def _apply(session: _Session, new: Target, password: str, password_file: Optiona
     return 0
 
 
+def _confirm(first: str, stay: Optional[str]) -> bool:
+    return _yes(first) and (stay is None or input('Type "local" to confirm the switch: ').strip() == "local")
+
+
 def _use_local(session: _Session) -> int:
     if not session.unlock():
         return 1
@@ -636,14 +673,18 @@ def _use_local(session: _Session) -> int:
         port = int(local.get("SLEDGE_PG_PORT") or os.environ.get("SLEDGE_PG_PORT") or 5544)
     except ValueError:
         port = 5544
+    if not local:
+        port = _free_port(port)
     new = Target("localhost", port, user, local.get("SLEDGE_PG_DB") or f"airflow_{user}",
                  local.get("SLEDGE_PG_CACHE_DB") or CACHE_DB)
-    held = False
+    password = None
     if local:
         try:
-            held = _holds(session.secrets, new, _first_line(local["SLEDGE_PG_PASSWORD_FILE"]))
+            password = _first_line(local["SLEDGE_PG_PASSWORD_FILE"])
         except OSError:
             pass
+    held = password is not None and _holds(session.secrets, new, password)
+    takes_over = pg_dir if not local or _another_server(session.secrets, new, password) else None
     if held and session.target == _target_values(new, pg_dir):
         print(f"SledgeHammer already uses your local Postgres in {pg_dir}.")
         _warn(session, session.views())
@@ -657,15 +698,14 @@ def _use_local(session: _Session) -> int:
         _warn(session, session.views())
         stay = None
     else:
-        stay = _plan(session, new)
+        stay = _plan(session, new, takes_over)
         if local:
             print(f"Your local Postgres in {pg_dir} is already set up; it is started if it is stopped.")
         else:
-            print(f"Your local Postgres is created in {pg_dir} on port {port}, or the next free port, and started.")
+            print(f"Your local Postgres is created in {pg_dir} on port {port} and started.")
     if _dryrun():
         return 0
-    first = f"Write {session.target_file}? [y/N]: " if held else "Switch SledgeHammer to your local Postgres? [y/N]: "
-    if not _yes(first) or (stay is not None and input('Type "local" to confirm the switch: ').strip() != "local"):
+    if not _confirm(f"Write {session.target_file}? [y/N]: " if held else SWITCH_LOCAL, stay):
         print("Nothing changed.")
         return 1
     session.applying = True
@@ -676,7 +716,16 @@ def _use_local(session: _Session) -> int:
     if not local:
         _err(f"no local Postgres in {pg_dir} after its setup; the secrets and postgres.env are unchanged")
         return 1
-    new = new._replace(port=int(local["SLEDGE_PG_PORT"]))
+    shown = new
+    new = Target("localhost", int(local["SLEDGE_PG_PORT"]), local["SLEDGE_PG_USER"], local["SLEDGE_PG_DB"],
+                 local["SLEDGE_PG_CACHE_DB"])
+    if new != shown:
+        print(f"Your local Postgres was set up as {_where(new.user, new.host, new.port, new.airflow_db)}, not "
+              f"{_where(shown.user, shown.host, shown.port, shown.airflow_db)}, so check the switch again.")
+        if not _confirm(SWITCH_LOCAL, _plan(session, new, takes_over)):
+            print(f"The secrets and {session.target_file} are unchanged; your new local Postgres in {pg_dir} "
+                  f"keeps running.")
+            return 1
     password_file = local["SLEDGE_PG_PASSWORD_FILE"]
     password = _first_line(password_file)
     rc = _apply(session, new, password, password_file, pg_dir, rewrite=not _holds(session.secrets, new, password))
