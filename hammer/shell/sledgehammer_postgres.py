@@ -83,7 +83,7 @@ def _err(message: str) -> None:
 
 
 def _where(user, host, port, db) -> str:
-    return f"{user}@{host}:{port}/{db}"
+    return f"{user}@{_server(host, port)}/{db}"
 
 
 def _conn_where(conn: Dict) -> str:
@@ -95,7 +95,7 @@ def _fields_where(fields: Dict) -> str:
 
 
 def _server(host, port) -> str:
-    return f"{host}:{port}"
+    return f"[{host}]:{port}" if ":" in str(host) else f"{host}:{port}"
 
 
 def _same_server(a: Tuple, b: Tuple) -> bool:
