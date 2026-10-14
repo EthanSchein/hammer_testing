@@ -6,7 +6,7 @@ from hammer.vlsi import pd_store
 @pytest.fixture
 def no_password_sources(tmp_path, monkeypatch):
     monkeypatch.setattr(pd_store, "_parse_airflow_cfg_conn", lambda: {})
-    for var in ("HAMMER_PG_PASSWORD", "PGPASSWORD", "PGPASSFILE", "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"):
+    for var in ("HAMMER_PG_PASSWORD", "PGPASSWORD", "PGPASSFILE", "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "SLEDGE_PG_DIR"):
         monkeypatch.delenv(var, raising=False)
     home = tmp_path / "home"
     home.mkdir()

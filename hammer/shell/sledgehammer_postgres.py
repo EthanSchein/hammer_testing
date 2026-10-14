@@ -398,7 +398,7 @@ def _free_port(first: int) -> int:
     return next((port for port in range(first, first + 101) if not _port_busy(port)), first)
 
 
-def _password_source(session: _Session, view: _View, fields: Dict) -> str:
+def _password_source(session: _Session, view: _View, fields: Dict) -> Optional[str]:
     if "password" in fields:
         return f"from {session.label(view, 'password', fields['password'][1])} (not shown)"
     if view.env.get("PGPASSWORD"):
@@ -406,7 +406,27 @@ def _password_source(session: _Session, view: _View, fields: Dict) -> str:
     pgpass = view.env.get("PGPASSFILE") or os.path.join(os.path.expanduser("~"), ".pgpass")
     if os.path.isfile(pgpass):
         return f"from {pgpass}, if it has a line for this server"
-    return "none found; set HAMMER_PG_PASSWORD or add a line to ~/.pgpass"
+    if pd_store.local_password(fields, view.env, session.target)[0] is not None:
+        return f"from {os.path.join(pd_store.local_postgres_dir(view.env, session.target), 'password')} (not shown)"
+    return None
+
+
+def _no_password(session: _Session, views: List[_View]) -> None:
+    """Say when studio or hammer-vlsi in this shell has no password for the cache, and where it would find one."""
+    lacking: Dict[Tuple[str, str, str], List[str]] = {}
+    for view in views[2:]:
+        theirs = pd_store.pg_fields(view.env, session.target)
+        if _password_source(session, view, theirs) is None:
+            why = pd_store.local_password(theirs, view.env, session.target)[1]
+            server = _server(theirs["host"][0], theirs["port"][0])
+            lacking.setdefault((server, view.env.get("PGPASSFILE") or "~/.pgpass", why), []).append(view.who)
+    for (server, pgpass, why), who in lacking.items():
+        they = "they" if len(who) > 1 else "it"
+        print(f"  {_who(who)} in this shell {'have' if len(who) > 1 else 'has'} no password for the cache, so "
+              f"{they} cannot log in; {they} would take one from HAMMER_PG_PASSWORD, which \"source venv.sh\" "
+              f"loads from the encrypted secrets, or from a line for {server} in {pgpass}")
+        if why:
+            print(f"  {why}")
 
 
 def _outside(session: _Session, views: List[_View], fields: Dict) -> None:
@@ -459,12 +479,14 @@ def _show(session: _Session) -> int:
     for field, name in SHOWN:
         value, source = fields[field]
         _row(name, value, session.label(server, field, source))
-    _row("password", _password_source(session, server, fields))
+    _row("password", _password_source(session, server, fields)
+         or "none found; set HAMMER_PG_PASSWORD or add a line to ~/.pgpass")
     try:
         _row("reachable", _reachable(pd_store._pg_settings(server.env, session.target)))
     except pd_store.DatabaseUnavailable:
         _row("reachable", "not checked (no password)")
     _outside(session, views, fields)
+    _no_password(session, views)
 
     if airflow and not _same_server((airflow.get("host"), airflow.get("port")), (fields["host"][0], fields["port"][0])):
         print(f"NOTE: Airflow and the cache point at different servers: Airflow at "
@@ -648,14 +670,15 @@ def _apply(session: _Session, new: Target, password: str, password_file: Optiona
              f"({e}), so studio and hammer-vlsi outside Airflow do not follow yet; rerun this command")
         return 1
     print(f"Wrote {session.target_file}.")
+    login = ("HAMMER_PG_PASSWORD, a ~/.pgpass line or, on the host your local Postgres runs on, its password file"
+             if pg_dir else "HAMMER_PG_PASSWORD or a ~/.pgpass line")
     if not rewrite:
-        print("Outside Airflow, studio and hammer-vlsi now follow it too and log in with HAMMER_PG_PASSWORD or a "
-              "~/.pgpass line, as before.")
+        print(f"Outside Airflow, studio and hammer-vlsi now follow it too and log in with {login}.")
         return 0
     print(f"SledgeHammer now uses {_server(new.host, new.port)} as {new.user}: Airflow database {new.airflow_db}, "
           f"cache database {new.cache_db}.")
     print("Restart a running sledgehammer server so Airflow picks it up. Outside Airflow, studio and hammer-vlsi "
-          "follow now and log in with HAMMER_PG_PASSWORD or a ~/.pgpass line, as before.")
+          f"follow now and log in with {login}.")
     return 0
 
 

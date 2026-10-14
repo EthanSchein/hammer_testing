@@ -38,6 +38,7 @@ def test_missing_password_is_database_unavailable(monkeypatch, tmp_path) -> None
     for var in ("HAMMER_PG_PASSWORD", "PGPASSWORD", "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("PGPASSFILE", str(tmp_path / "none"))
+    monkeypatch.setenv("SLEDGE_PG_DIR", str(tmp_path / "no-postgres"))
     monkeypatch.setattr(pd_store, "_parse_airflow_cfg_conn", lambda: {})
     with pytest.raises(pd_store.DatabaseUnavailable):
         pd_store._pg_settings()

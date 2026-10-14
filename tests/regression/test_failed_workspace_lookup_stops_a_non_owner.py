@@ -17,6 +17,7 @@ def _no_password(monkeypatch) -> None:
     for key in ("HAMMER_PG_PASSWORD", "PGPASSWORD"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("PGPASSFILE", "/nonexistent/.pgpass")
+    monkeypatch.setenv("SLEDGE_PG_DIR", "/nonexistent/postgres")
     monkeypatch.setattr(pd_store, "_parse_airflow_cfg_conn", lambda: {})
     monkeypatch.setattr(pd_store, "psycopg2", types.SimpleNamespace(connect=lambda **kw: pytest.fail("connected")))
 

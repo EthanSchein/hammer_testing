@@ -21,12 +21,13 @@ field):
          host=localhost, port=5544,
          db=sledgehammer_studio (HAMMER_PG_DB in ``postgres.env`` wins),
          user=$USER
-       There is no default password: if none resolves from the env or
-       airflow.cfg, connecting raises rather than trying without one.
+       There is no default password: if none resolves from the env,
+       Airflow's connection, libpq's PGPASSWORD or pgpass file or, for your
+       local Postgres while it runs on this host, its password file,
+       connecting raises rather than trying without one.
 
-So if your ``airflow.cfg`` already contains a valid
-``sql_alchemy_conn = postgresql+psycopg2://user:pass@host:port/db`` line,
-``pd_store`` will use it automatically with no env vars required.
+So after the default setup, which writes ``postgres.env`` for your local
+Postgres, ``pd_store`` needs no env vars on the host that Postgres runs on.
 
 Which ``airflow.cfg`` is used:
     ``$AIRFLOW_HOME/airflow.cfg`` if AIRFLOW_HOME is set, else
@@ -40,6 +41,7 @@ Airflow's own tables.
 from __future__ import annotations
 
 import configparser
+import errno
 import getpass
 import gzip
 import hashlib
@@ -285,6 +287,8 @@ def export_conn_defaults() -> None:
 
 SECRETS_FILE = str(Path(__file__).resolve().parents[2] / ".sledgehammer" / "airflow-secrets.env.gpg")
 
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
 _PG_VARS = (("host", "HAMMER_PG_HOST"), ("port", "HAMMER_PG_PORT"), ("dbname", "HAMMER_PG_DB"),
             ("user", "HAMMER_PG_USER"), ("password", "HAMMER_PG_PASSWORD"))
 
@@ -347,6 +351,90 @@ def pg_fields(environ: Optional[Mapping[str, str]] = None,
     return fields
 
 
+def local_postgres_dir(environ: Optional[Mapping[str, str]] = None,
+                       target: Optional[Dict[str, str]] = None) -> str:
+    """Where sledge-local-postgres.sh keeps your local Postgres: $SLEDGE_PG_DIR, else postgres.env's, else ~/.sledgehammer/postgres."""
+    environ = os.environ if environ is None else environ
+    if target is None:
+        target = postgres_target(postgres_target_file(secrets_file(environ)))
+    pg_dir = (environ.get("SLEDGE_PG_DIR") or target.get("SLEDGE_PG_DIR")
+              or os.path.join(os.path.expanduser("~"), ".sledgehammer", "postgres"))
+    return os.path.abspath(os.path.expanduser(pg_dir))
+
+
+def _local_port(pg_dir: str) -> Optional[int]:
+    """The port in pg_dir's postgresql.conf, read as sledge-local-postgres.sh reads it; None without that file."""
+    try:
+        with open(os.path.join(pg_dir, "data", "postgresql.conf")) as f:
+            ports = re.findall(r"^[ \t]*port[ \t]*=[ \t]*([0-9]+)", f.read(), re.M)
+    except (OSError, ValueError):
+        return None
+    return int(ports[-1]) if ports else 5432
+
+
+def _not_running_here(pg_dir: str) -> str:
+    """Why pg_dir's Postgres is not running on this host, as sledge-local-postgres.sh records it, or "" when it is."""
+    here = os.uname().nodename
+    try:
+        with open(os.path.join(pg_dir, "host")) as f:
+            host = f.readline().strip()
+        with open(os.path.join(pg_dir, "data", "postmaster.pid")) as f:
+            pid = int(f.readline())
+    except (OSError, ValueError):
+        return f"is not running on {here}"
+    if host != here:
+        return f"was started on {host}, not on {here}"
+    if pid > 0:
+        try:
+            os.kill(pid, 0)
+            return ""
+        except (OSError, OverflowError):
+            pass
+    return f"is not running on {here}"
+
+
+def local_password(fields: Dict[str, Tuple[Any, str]], environ: Optional[Mapping[str, str]] = None,
+                   target: Optional[Dict[str, str]] = None) -> Tuple[Optional[str], str]:
+    """Your local Postgres's password when fields point at its host and port and it runs here, else None and why its file was not used ("" when it does not apply)."""
+    environ = os.environ if environ is None else environ
+    if not hasattr(os, "getuid") or str(fields["host"][0]).lower() not in LOCAL_HOSTS:
+        return None, ""
+    pg_dir = local_postgres_dir(environ, target)
+    path = os.path.join(pg_dir, "password")
+    if _local_port(pg_dir) != fields["port"][0] or not os.path.lexists(path):
+        return None, ""
+    for var in ("PGHOSTADDR", "PGSERVICE"):
+        if environ.get(var):
+            return None, f"{path} was not used because {var} is set and can send the login to another server"
+    elsewhere = _not_running_here(pg_dir)
+    if elsewhere:
+        return None, f"{path} was not used because your local Postgres {elsewhere}"
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except FileNotFoundError:
+        return None, ""
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            return None, f"{path} was not used because it is a symbolic link"
+        return None, f"{path} could not be read ({e.strerror})"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None, f"{path} was not used because it is not a regular file"
+        if st.st_uid != os.getuid():
+            return None, f"{path} was not used because it is owned by someone else"
+        if st.st_mode & 0o077:
+            return None, (f"{path} was not used because group or others have access to it "
+                          f"(mode {stat.S_IMODE(st.st_mode):03o}); chmod 600 it")
+        with os.fdopen(fd, closefd=False) as f:
+            password = f.readline().rstrip("\n")
+    except (OSError, ValueError):
+        return None, f"{path} could not be read"
+    finally:
+        os.close(fd)
+    return (password, "") if password else (None, f"{path} is empty")
+
+
 def _pg_settings(environ: Optional[Mapping[str, str]] = None,
                  target: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
@@ -358,7 +446,13 @@ def _pg_settings(environ: Optional[Mapping[str, str]] = None,
            beside the secrets, else airflow.cfg
         3. Hardcoded defaults (the database: postgres.env's HAMMER_PG_DB, else sledgehammer_studio)
         4. Password only: libpq's own PGPASSWORD or pgpass file ($PGPASSFILE, else ~/.pgpass)
+        5. Password only, when the host is local, the port is the one in local_postgres_dir()'s
+           postgresql.conf and that Postgres runs on this host: its password file, if it is yours
+           and only you can read it
     """
+    environ = os.environ if environ is None else environ
+    if target is None:
+        target = postgres_target(postgres_target_file(secrets_file(environ)))
     fields = pg_fields(environ, target)
     settings: Dict[str, Any] = {field: fields[field][0] for field in ("host", "port", "dbname", "user")}
     settings["connect_timeout"] = _connect_timeout()
@@ -371,10 +465,14 @@ def _pg_settings(environ: Optional[Mapping[str, str]] = None,
     if os.path.isfile(pgpass):
         settings["passfile"] = pgpass
         return settings
+    password, why = local_password(fields, environ, target)
+    if password is not None:
+        settings["password"] = password
+        return settings
     raise DatabaseUnavailable(
-        "No Postgres password found. Set HAMMER_PG_PASSWORD in the "
-        "environment, ensure airflow.cfg's sql_alchemy_conn "
-        "contains a password, or add a ~/.pgpass entry."
+        "No Postgres password found." + (f" {why}." if why else "") + " Run \"source venv.sh\" to load "
+        "HAMMER_PG_PASSWORD from the encrypted secrets, export HAMMER_PG_PASSWORD, or add a ~/.pgpass line "
+        "for this server; \"sledgehammer postgres show\" says where each setting comes from."
     )
 
 
