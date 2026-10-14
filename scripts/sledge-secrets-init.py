@@ -22,7 +22,6 @@ import re
 import subprocess
 import sys
 import tempfile
-from urllib.parse import urlparse
 
 WANT = ["fernet_key", "internal_api_secret_key", "sql_alchemy_conn",
         "secret_key", "jwt_secret"]
@@ -82,10 +81,18 @@ def main() -> None:
         if k in found:
             lines.append(f"{found[k][0]}={found[k][1]}")
 
+    sys.path.insert(0, repo)
+    try:
+        from hammer.shell.sledgehammer_postgres import _env_value
+        from hammer.vlsi import pd_store
+    except Exception as e:
+        sys.exit(f"could not import hammer from {repo} ({e}); run this with the checkout's venv active "
+                 "(source ./venv.sh). Nothing was written.")
+
     # pd_store reads HAMMER_PG_PASSWORD for the sledgehammer_studio cache DB.
-    pw = urlparse(found["sql_alchemy_conn"][1].replace("+psycopg2", "")).password
+    pw = pd_store._parse_conn_uri(found["sql_alchemy_conn"][1]).get("password")
     if pw:
-        lines += ["", f"HAMMER_PG_PASSWORD={pw}"]
+        lines += ["", f"HAMMER_PG_PASSWORD={_env_value(pw)}"]
 
     missing = [k for k in WANT if k not in found]
     if missing:
