@@ -366,6 +366,7 @@ fi
 
 if [ -z "$_lab" ]; then
 step "local Postgres (Airflow's database and the cache)"
+_local_pg=""
 if [ -f "$SECRETS_FILE" ]; then
     echo "  skipped: $SECRETS_FILE already names a Postgres"
 elif [ ! -t 0 ]; then
@@ -383,6 +384,7 @@ else
                         SLEDGE_PG_DIR|SLEDGE_PG_HOST|SLEDGE_PG_PORT|SLEDGE_PG_USER|SLEDGE_PG_DB|SLEDGE_PG_PASSWORD_FILE) export "$_k=$_v" ;;
                     esac
                 done < <("$REPO/scripts/sledge-local-postgres.sh" env)
+                _local_pg=1
             else
                 echo "  the local Postgres setup did not finish; the secrets step below asks which Postgres to use."
             fi
@@ -407,6 +409,13 @@ else
         echo "  create them later: ./scripts/sledge-secrets-create.sh"
     else
         "$REPO/scripts/sledge-secrets-create.sh"
+        if [ -n "$_local_pg" ]; then
+            # postgres.env beside the secrets is where studio and hammer-vlsi outside Airflow find this Postgres.
+            SLEDGE_SECRETS_FILE="$SECRETS_FILE" "$REPO/.venv/bin/python" -I -c \
+                'import sys; from hammer.shell import sledgehammer_postgres as p; sys.exit(p.write_local_target(sys.argv[1]))' \
+                "${SLEDGE_PG_DIR:-$HOME/.sledgehammer/postgres}" \
+                || echo "  to point studio and hammer-vlsi outside Airflow at it, run: sledgehammer postgres use local"
+        fi
     fi
 fi
 fi

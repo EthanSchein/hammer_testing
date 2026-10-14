@@ -663,6 +663,11 @@ def _confirm(first: str, stay: Optional[str]) -> bool:
     return _yes(first) and (stay is None or input('Type "local" to confirm the switch: ').strip() == "local")
 
 
+def _local_target(local: Dict[str, str]) -> Target:
+    return Target("localhost", int(local["SLEDGE_PG_PORT"]), local["SLEDGE_PG_USER"], local["SLEDGE_PG_DB"],
+                  local["SLEDGE_PG_CACHE_DB"])
+
+
 def _use_local(session: _Session) -> int:
     if not session.unlock():
         return 1
@@ -717,8 +722,7 @@ def _use_local(session: _Session) -> int:
         _err(f"no local Postgres in {pg_dir} after its setup; the secrets and postgres.env are unchanged")
         return 1
     shown = new
-    new = Target("localhost", int(local["SLEDGE_PG_PORT"]), local["SLEDGE_PG_USER"], local["SLEDGE_PG_DB"],
-                 local["SLEDGE_PG_CACHE_DB"])
+    new = _local_target(local)
     if new != shown:
         print(f"Your local Postgres was set up as {_where(new.user, new.host, new.port, new.airflow_db)}, not "
               f"{_where(shown.user, shown.host, shown.port, shown.airflow_db)}, so check the switch again.")
@@ -732,6 +736,28 @@ def _use_local(session: _Session) -> int:
     if rc == 0:
         print(f"Its password is in {password_file}.")
     return rc
+
+
+def write_local_target(pg_dir: str) -> int:
+    """Write postgres.env for the local Postgres in pg_dir as use local does, without asking; uv_setup.sh runs it."""
+    pg_dir = os.path.abspath(os.path.expanduser(pg_dir))
+    target_file = pd_store.postgres_target_file()
+    local = _local_settings(pg_dir)
+    if not local:
+        _err(f"no local Postgres in {pg_dir}, so {target_file} was not written")
+        return 1
+    values = _target_values(_local_target(local), pg_dir)
+    if os.path.exists(target_file) and pd_store.postgres_target(target_file) != values:
+        print(f"  {target_file} already holds other Postgres settings, so it is left as it is. To point studio and "
+              f"hammer-vlsi outside Airflow at your local Postgres, run: sledgehammer postgres use local")
+        return 0
+    try:
+        _write_target(target_file, values)
+    except OSError as e:
+        _err(f"{target_file} could not be written ({e})")
+        return 1
+    print(f"  wrote {target_file}")
+    return 0
 
 
 def _ask(label: str, default, check) -> str:
