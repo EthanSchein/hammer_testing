@@ -579,6 +579,16 @@ def _refuse_if_port_taken(port: int) -> None:
             f"        port, or unset SLEDGE_PORT to let the launcher auto-select.")
 
 
+def _connect_airflow_db(**options):
+    """Connect to Airflow's database with the conn split into fields, so a raw / ? or # in its password still connects."""
+    import psycopg2
+    from hammer.vlsi import pd_store
+    settings = pd_store._parse_conn_uri(os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", ""))
+    if not settings:
+        raise ValueError("the Airflow conn is not a Postgres URL")
+    return psycopg2.connect(**settings, **options)
+
+
 def _refuse_if_scheduler_running() -> None:
     """Warn if another scheduler is already live on this metadata DB.
 
@@ -592,8 +602,7 @@ def _refuse_if_scheduler_running() -> None:
     if os.environ.get("SLEDGE_ALLOW_MULTI_SCHEDULER") or not conn_uri.startswith("postgresql"):
         return  # opt-out, or sqlite/local where there's nothing to race
     try:
-        import psycopg2
-        conn = psycopg2.connect(conn_uri.replace("+psycopg2", ""), connect_timeout=8)
+        conn = _connect_airflow_db(connect_timeout=8)
     except Exception:
         return  # no driver or DB unreachable -- Airflow's own startup will report it
     try:
@@ -698,11 +707,13 @@ def _promote_owner_to_admin() -> None:
     if not conn_str.startswith("postgresql"):
         return
     try:
-        import psycopg2
-        # sqlalchemy-style postgresql+psycopg2:// needs normalizing for psycopg2
-        conn = psycopg2.connect(conn_str.replace("postgresql+psycopg2://", "postgresql://"))
-    except Exception as e:
+        conn = _connect_airflow_db()
+    except ImportError as e:
         print(f"[roles] couldn't check the owner's role ({e}).")
+        return
+    except Exception:
+        print("[roles] couldn't check the owner's role: could not connect to Airflow's database; "
+              "check it with: sledgehammer postgres show")
         return
     try:
         with conn.cursor() as cur:
@@ -774,10 +785,13 @@ def _ensure_member_role() -> None:
     if not conn_str.startswith("postgresql"):
         return
     try:
-        import psycopg2
-        conn = psycopg2.connect(conn_str.replace("postgresql+psycopg2://", "postgresql://"))
-    except Exception as e:
+        conn = _connect_airflow_db()
+    except ImportError as e:
         print(f"[roles] couldn't check the Member role ({e}).")
+        return
+    except Exception:
+        print("[roles] couldn't check the Member role: could not connect to Airflow's database; "
+              "check it with: sledgehammer postgres show")
         return
     try:
         with conn.cursor() as cur:
