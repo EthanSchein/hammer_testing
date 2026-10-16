@@ -1,18 +1,18 @@
 ASAP7 Technology Library
 ========================
 
-Hammer's default demonstration PDK is [ASAP7](http://asap.asu.edu/asap/). There are some special setup and known issues with this open PDK.
+Hammer's default demonstration PDK is [ASAP7](https://asap.asu.edu/). There are some special setup and known issues with this open PDK.
 
 Setup and Environment
 ---------------------
 
 In addition to requirements for `hammer-vlsi`, using ASAP7 also requires:
 - ASAP7 PDK version 1p7, available [here on GitHub](https://github.com/The-OpenROAD-Project/asap7). We recommend downloading an archive of or shallow cloning the repository.
-- The Calibre deck tarball (downloaded separately from the website) must not be extracted. It should be placed in the directory specified by `technology.asap7.tarball_dir`. For ease, this can be same directory as the repository.
-- Either the `gdstk` or `gdspy` GDS manipulation utility is required for 4x database downscaling. `gdstk` (available [here on GitHub](https://github.com/heitzmann/gdstk), version >0.6) is highly recommended; however, because it is more difficult to install, `gdspy` (available [here on Github](https://github.com/heitzmann/gdspy/releases), specifically version 1.4 can also be used instead, but it is much slower.
+- The Calibre deck tarball (downloaded separately from the website) must not be extracted. It should be placed in the directory specified by `technology.asap7.tarball_dir`. For ease, this can be the same directory as the repository.
+- Either the `gdstk` or `gdspy` GDS manipulation utility is required for 4x database downscaling. `gdstk` (available [here on GitHub](https://github.com/heitzmann/gdstk), version >0.6) is highly recommended; however, because it is more difficult to install, `gdspy` (available [here on GitHub](https://github.com/heitzmann/gdspy/releases), specifically version 1.4) can also be used instead, but it is much slower.
 - Calibre must be the DRC/LVS tool.  The rule decks only support 2017-year Calibre versions.
 
-\*At this moment, for BWRC affiliates, the environment needed for a `gdstk` or `gdspy` install is setup only on the LSF cluster machines. To install it, first enable the Python dev environment:
+\*At this moment, for BWRC affiliates, the environment needed for a `gdstk` or `gdspy` install is set up only on the LSF cluster machines. To install it, first enable the Python dev environment:
 ```
 scl enable rh-python36 bash
 ```
@@ -22,9 +22,10 @@ python3 setup.py install --user
 ```
 For `gdspy`, the installation is much easier, depending just on `pip` and `numpy`:
 ```
-python -m pip install gdspy --user
+python -m pip install gdspy==1.4 --user
 ```
-Or, replace the pip installation with installation from source in the `hammer/src/tools/gdspy` submodule.
+
+> **SledgeHammer:** The steps above install into the user site-packages of Python 3.6, which the SledgeHammer venv (`.venv`, Python 3.11 by default) does not see. Install the utility into `.venv` instead: from the hammer checkout, run `source .venv/bin/activate`, then `uv pip install "gdstk>=0.9.0,<0.10"` or `uv pip install "gdspy==1.4"`. PyPI has prebuilt Linux wheels for recent `gdstk` 0.9 releases, so the source build above is not needed. Do not use `uv sync --extra asap7-gdstk`: `uv sync` removes the Airflow packages that `./scripts/uv_setup.sh` installs outside the lock (see [CLI_REFERENCE.md](https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/CLI_REFERENCE.md)).
 
 Dummy SRAMs
 -----------
@@ -36,7 +37,7 @@ All pins are on M4, with the signal all on the left side and the power stripes r
 
 **All SRAMs are scaled up by 4x, so they are subject to the scaling script.**
 
-`sram-cache-gen.py` generates `sram-cache.json` using `srams.txt`, which contains a list of available SRAMs in Hammer IR. `sram-cache.json` memories is used by MacroCompiler to insert these memories into the design.
+`sram-cache-gen.py` generates `sram-cache.json` using `srams.txt`, which contains a list of available SRAMs in Hammer IR. `sram-cache.json` memories are used by MacroCompiler to insert these memories into the design.
 
 Finally, the SRAMCompiler in `sram_compiler/__init__.py` is used to generate the ExtraLibrarys (including .lib, .lef, .gds) needed by the particular design.
 
@@ -49,7 +50,7 @@ Known Issues
 
 3. Innovus tries to fix non-existent M3 and M5 enclosure violations, unfortunately lengthening violation fixing time. Ignore these when reviewing the violations in Innovus.
 
-4. If you specify core margins in the placement constraints, they left and bottom margins should be a multiple of 0.384 to avoid DRC violations. Layer offsets for M4-M7 are adjusted manually to keep all wires on-grid.
+4. If you specify core margins in the placement constraints, the left and bottom margins should be a multiple of 0.384 to avoid DRC violations. Layer offsets for M4-M7 are adjusted manually to keep all wires on-grid.
 
 5. Common expected DRC violations (at reasonable, <70% local density):
    - M(4,5,6,7).AUX.(1,2) only if the floorplan size requirement above is not satisfied

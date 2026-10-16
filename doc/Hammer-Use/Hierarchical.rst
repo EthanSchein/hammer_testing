@@ -8,7 +8,7 @@ Hammer supports a bottom-up hierarchical flow. This is beneficial for very large
 Hierarchical Hammer Config
 --------------------------
 
-The hierarchal flow is controlled in the ``vlsi.inputs.hierarchal`` namespace. To specify hierarchical mode, you must specify the following keys. In this example, we have our top module set as ``ChipTop``, with a submodule ``ModuleA`` and another submdule ``ModuleAA`` below that (these are names of Verilog modules).
+The hierarchical flow is controlled in the ``vlsi.inputs.hierarchical`` namespace. To specify hierarchical mode, you must specify the following keys. In this example, we have our top module set as ``ChipTop``, with a submodule ``ModuleA`` and another submodule ``ModuleAA`` below that (these are names of Verilog modules).
 
 .. code-block:: yaml
 
@@ -49,13 +49,20 @@ Flow Management and Actions
 
 Based on the structure in ``vlsi.inputs.hierarchical.manual_modules``, Hammer constructs a hierarchical flow graph of dependencies. In this particular example, synthesis and place-and-route of ``ModuleAA`` will happen first. Synthesis of ``ModuleA`` will then depend on the place-and-route output of ``ModuleAA``, and so forth.
 
-These are enumerated in the auto-generated Makefile, ``hammer.d``, which is placed in the directory pointed to by the ``--obj_dir`` command line flag when the ``buildfile`` action is run. This action must be run BEFORE executing your flow. If you adjust the hierarchy, you must re-run this action.
+These are enumerated in the auto-generated Makefile, ``hammer.d``, which is placed in the directory pointed to by the ``--obj_dir`` command line flag when the ``build`` action is run (``make buildfile`` in Chipyard). This action must be run BEFORE executing your flow. If you adjust the hierarchy, you must re-run this action.
 
 To perform a flow action (syn, par, etc.) for a module using the auto-generated Makefile, the name of the action is appended with the module name. For example, the generated Make target for synthesis of ``ModuleA`` is ``syn-ModuleA``. A graphical example of the auto-generated dependency graph with ``RocketTile`` under a ``ChipTop`` is shown below:
 
 .. image:: hier.svg
 
 The auto-generated Makefile also has ``redo-`` targets corresponding to each generated action, e.g. ``redo-syn-ModuleA``. These targets break the dependency graph and allow you to re-run any action with new input configuration without forcing the flow to re-run from the beginning of the graph.
+
+.. note::
+    In SledgeHammer, set ``vlsi.core.build_system: sledgehammer`` and the same ``build`` action also writes and registers an Airflow DAG with one ``module_<name>`` task group per module.
+    Run it from the vlsi directory with ``sledgehammer buildfile``, which runs ``make buildfile`` underneath (``make build`` when the Makefile has a ``build`` rule and no ``buildfile`` rule), and rerun it whenever you adjust the hierarchy.
+    Run a target by its name from the same directory, for example ``sledgehammer syn-ModuleA`` (the same as ``sledgehammer run syn --module ModuleA``), and the DAG first runs the stages that target depends on, including those of the child modules.
+    Unlike the Make ``redo-`` targets, ``sledgehammer redo-syn-ModuleA`` keeps those dependencies and forces only ``syn`` of ``ModuleA`` to rerun.
+    See `CLI_REFERENCE.md <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/CLI_REFERENCE.md>`_.
 
 Cadence Implementation
 ----------------------
@@ -67,7 +74,7 @@ ILMs are similar to LEFs and LIBs for traditional hard macros, except that the i
 Tips for Constraining Hierarchical Modules
 ------------------------------------------
 
-In a bottom-up hierarchical flow, is is important to remember that submodules do not know the environment in which they will placed. This means:
+In a bottom-up hierarchical flow, it is important to remember that submodules do not know the environment in which they will be placed. This means:
 
 * At minimum, the pins must be placed on the correct edges of the submodule on metal layers that are accessible in the parent level. Depending on the technology, this may interfere with things like power straps near the edge, so custom obstructions may be necessary. If fixed IOs are placed in submodules (e.g. bumps), then in the parent level, those pins must be promoted up using the ``preplaced: true`` option in the pin assignment.
 
@@ -77,7 +84,7 @@ In a bottom-up hierarchical flow, is is important to remember that submodules do
 
 * Custom SDC constraints that originate from a higher level (e.g. false paths from async inputs) need to be specified in submodules as well.
 
-* Custom CPFs will need to be written if differently-named power nets need to globally connected between submodules. Similarly, hierarchical flow with custom CPFs can also be used to fake a multi-power domain topology until Hammer properly supports this feature.
+* Custom CPFs will need to be written if differently-named power nets need to be globally connected between submodules. Similarly, hierarchical flow with custom CPFs can also be used to fake a multi-power domain topology until Hammer properly supports this feature.
 
 Special Notes & Limitations
 ---------------------------
@@ -90,4 +97,8 @@ Special Notes & Limitations
 
     * The pin placement API does not match the placement of pins that may face each other in two adjacent submodule instances. You will need to either manually place the pins yourself or ensure a sufficient routing channel between the instances at the parent level.
 
-#. Hammer does not support running separate decks for submodule DRC and LVS. Technology plugins may need to be written with Makefiles and/or technology-specific options that will implement different checks for submodules vs. the  top level.
+#. Hammer does not support running separate decks for submodule DRC and LVS. Technology plugins may need to be written with Makefiles and/or technology-specific options that will implement different checks for submodules vs. the top level.
+
+.. note::
+    In SledgeHammer, the dependency check that skips unchanged stages keeps one ``master_database.json`` per ``--obj_dir`` and tracks each stage by name, not by module.
+    Each module's ``syn`` is therefore compared with whichever module ran ``syn`` last, so in a hierarchical flow a module's stage usually reruns, or restores its result from the PD cache, even when nothing in that module changed.

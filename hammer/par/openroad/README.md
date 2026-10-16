@@ -5,9 +5,9 @@ OpenROAD Place-and-Route Tool Plugin
 Tool Setup
 ----------
 
-* OpenROAD - install [using conda](https://anaconda.org/litex-hub/openroad) or [from source](https://github.com/The-OpenROAD-Project/OpenROAD#build)
+* OpenROAD: install [using conda](https://anaconda.org/litex-hub/openroad) or [from source](https://github.com/The-OpenROAD-Project/OpenROAD#build)
   * we recommend installing from source because the conda package was compiled with the GUI disabled
-* KLayout (DEF to GDSII conversion) - install [using conda](https://anaconda.org/litex-hub/klayout) or [from source](https://www.klayout.de/build.html).
+* KLayout (DEF to GDSII conversion): install [using conda](https://anaconda.org/litex-hub/klayout) or [from source](https://www.klayout.de/build.html).
 
 
 Tool Steps
@@ -55,12 +55,12 @@ The plugin (``__init__.py`` and ``defaults.yml``) is still the best reference fo
 
 ### Macro Placement
 
-At the beginning of the ``floorplan_design`` step, a file called ``macros.txt`` will be generated in ``build/par-rundir`` that lists for each macro: their name/path in the design, master cell name, width/height, and origin (x,y). These may help in setting the ``vlsi.inputs.placement_constraints`` key in your design configuration.
+At the beginning of the ``floorplan_design`` step, a file called ``macros.txt`` will be generated in ``OBJ_DIR/par-rundir`` that lists for each macro: their name/path in the design, master cell name, width/height, and origin (x,y). These may help in setting the ``vlsi.inputs.placement_constraints`` key in your design configuration.
 
 Currently, there are two ways to place macros.
 
 If ``par.openroad.floorplan_mode`` == ``generate`` (default value), use the ``vlsi.inputs.placement_constraints`` key to specify the path and (x,y) coordinate of each macro in the design. The placement constraints for ALL macros must be specified, or OpenROAD will eventually throw an error about an unplaced instance.
-Note that the (x,y) position is fixed to the bottom left corner of the macro, then the orientation is applied. This means that for rotations besides ``r0``, the (x,y) position WILL NOT correspond to the bottom left corner of the final placed macro (e.g. the (x,y) position for a macro with orientation ``mx`` will correspond to the top left corner of the final placed macro). To get around this, when ``par.openroad.floorplan_origin_pos`` == ``bottom_left`` (default value), the placement (x,y) coordinates are translated based on the rotation of the macro and the width/height specified in the ``vlsi.inputs.placement_constraints``, so that the (x,y) position specified in ``vlsi.inputs.placement_constraints`` corresponds with the bottom left corner of the final placed macro. If ``par.openroad.floorplan_origin_pos`` == ``rotated``, then the (x,y) position of the macro is not translated.
+Note that the (x,y) position is fixed to the bottom left corner of the macro, then the orientation is applied. This means that for rotations besides ``r0``, the (x,y) position WILL NOT correspond to the bottom left corner of the final placed macro (e.g. the (x,y) position for a macro with orientation ``mx`` will correspond to the top left corner of the final placed macro). To get around this, when ``par.openroad.floorplan_origin_pos`` == ``bottom_left`` (default value), the placement (x,y) coordinates are translated based on the rotation of the macro and the width/height and origin of its master cell, so that the (x,y) position specified in ``vlsi.inputs.placement_constraints`` corresponds with the bottom left corner of the final placed macro. If ``par.openroad.floorplan_origin_pos`` == ``rotated``, then the (x,y) position of the macro is not translated.
 
 If ``par.openroad.floorplan_mode`` == ``auto_macro``, you must still use the ``vlsi.inputs.placement_constraints`` key to specify the top-level width/height and margins constraints of the chip, but all macros will be placed automatically using OpenROAD's ``macro_placement`` command, leading to poor-quality but sane results.
 
@@ -73,22 +73,27 @@ This is the same process used in the default VLSI flow from OpenROAD.
 
 Issue Archiving
 ---------------
-This plugin supports generating a ``tar.gz`` archive of the current ``build/par-rundir`` directory with a ``runme.sh`` script to reproduce the results.
+This plugin supports generating a ``tar.gz`` archive of the current ``OBJ_DIR/par-rundir`` directory with a ``runme.sh`` script to reproduce the results.
 This feature is enabled with the ``par.openroad.create_archive_mode`` YAML key, which can take the following values:
-* ``none`` - never create an archive (default)
-* ``after_error`` - if OpenROAD errors, create an archive of the run
-* ``always`` - create an archive after every par run (regardless of whether OpenROAD errors)
-* ``latest_run`` - create an archive of latest par run (don't run OpenROAD)
+* ``none``: never create an archive (default)
+* ``after_error``: if OpenROAD errors, create an archive of the run
+* ``always``: create an archive after every par run (regardless of whether OpenROAD errors)
+* ``latest_run``: create an archive of latest par run (don't run OpenROAD)
     * useful if OpenROAD gets stuck on endless optimization iterations but never actually "errors"
 
 Creating an archive does the following:
-* Generates a issue directory based on the date/time, top module, OS platform
+* Generates an issue directory based on the date/time, top module, OS platform
 * Dumps the logger output
 * Generates a runme.sh script
-* Copies .tcl, .sdc, .pdn, and .lef files in par-rundir to the issue dir
+* Copies .tcl, .sdc, and .lef files in par-rundir to the issue dir
 * Copies all input Verilog to issue dir
 * Copies all input LEFs to issue dir (some may not be used since they are hacked in read_lef())
 * Copies all input LIBs to issue dir
+* Copies the RC settings file, OpenRCX tech files, KLayout tech file, and def2stream script to issue dir, if they exist
 * Hacks copied par.tcl script to remove all abspaths
 * Hacks copied par.tcl script to comment out write_gds block w/ KLayout
-* Tars up issue dir
+* Tars up issue dir into a ``.tar.gz`` in the directory Hammer was run from, then deletes issue dir
+
+> **SledgeHammer:** DAG tasks run Hammer from the directory the DAG was generated in, so the ``.tar.gz`` lands there, even when the run's ``OBJ_DIR`` is in another workspace (``--workspace``).
+> A par stage that SledgeHammer skips as unchanged, or restores from the PD cache, does not run this plugin, so it creates no archive in any mode.
+> Run ``sledgehammer par --force`` to run it again.

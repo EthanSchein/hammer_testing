@@ -8,4 +8,5 @@ The following are prebuilt example designs, toolchain and/or flows you can use
    :caption: Examples:
 
    openroad-sky130
+   openroad-nangate45
    e2e

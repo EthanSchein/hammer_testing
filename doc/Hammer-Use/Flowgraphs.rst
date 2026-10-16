@@ -4,21 +4,25 @@ Flowgraphs
 ==========
 
 Hammer has **experimental** support for flowgraph constructions, similar to tools like `mflowgen <https://github.com/mflowgen/mflowgen>`_.
-Their intention is to simplify the way flows are constructed and ran in Hammer.
+Their intention is to simplify the way flows are constructed and run in Hammer.
 They can be imported via the ``hammer.flowgraph`` module.
+
+.. note::
+    In SledgeHammer, flows do not run through this module: ``sledgehammer <stage>`` and ``sledgehammer run <stages>`` trigger the Airflow DAG that the ``build`` action generates.
+    See the `SledgeHammer command reference <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/CLI_REFERENCE.md>`_.
 
 Construction
 ------------
 
-Flowgraphs are consist of a collection of ``Node`` instances linked together via a ``Graph`` instance.
+Flowgraphs consist of a collection of ``Node`` instances linked together via a ``Graph`` instance.
 Each ``Node`` "pulls" from a directory to feed in inputs and "pushes" output files to another directory to be used by other nodes.
 ``Node`` instances are roughly equivalent to a single call to the ``hammer-vlsi`` CLI tool, so they take in similar attributes:
 
 * The action being called
 * The tool used to perform the action
 * The pull and push directories
-* Any *required* input/output files
-* Any *optional* input/output files (the name of the *first* output file corresponds to the name of the JSON that the action emits)
+* Any *required* input/output files (the name of the *first* required output file corresponds to the name of the JSON that the action emits)
+* Any *optional* input/output files
 * A driver to run the node with; this enables backwards compatibility with :ref:`hooks <hooks>`.
 * Options to specify steps within an action; this enables backwards compatibility with :ref:`flow control <flow-control>`.
 
@@ -70,7 +74,7 @@ This list can be used to instantiate a ``Graph``:
 
 Using the Hammer CLI tool, separate actions are manually linked via an *auxiliary* action, such as ``syn-to-par``.
 By using a flowgraph, ``Graph`` instances by default *automatically* insert auxiliary actions.
-This means that actions no longer need to be specified in a flow; the necessary nodes are inserted by the flowgraph tool.
+This means that auxiliary actions no longer need to be specified in a flow; the necessary nodes are inserted by the flowgraph tool.
 This feature can be disabled by setting ``auto_auxiliary`` to ``False`` in a ``Graph``.
 
 A ``Graph`` can be run by calling the ``run`` method and passing in a starting node.
@@ -95,6 +99,8 @@ The interactions between the statuses are described in the following state diagr
         COMPLETE --> INVALID
         INVALID --> NOT_RUN
 
+``run`` itself sets only ``RUNNING``, ``COMPLETE`` and ``INCOMPLETE``: nothing in ``hammer.flowgraph`` sets ``INVALID`` or moves a node back to ``NOT_RUN``.
+
 Regardless of whether a flow completes with or without errors, the graph at the time of completion or error is returned, allowing for a graph to be "resumed" once any errors have been fixed.
 
 Visualization
@@ -102,13 +108,18 @@ Visualization
 
 A flowgraph can be visualized in Markdown files via the `Mermaid <https://mermaid.js.org/>`_ tool.
 Calling a ``Graph`` instance's ``to_mermaid`` method outputs a file named ``graph-viz.md``.
-The file can be viewed in a site like `Mermaid's live editor <https://mermaid.live/>`_ or using Github's native support.
+The file can be viewed in a site like `Mermaid's live editor <https://mermaid.live/>`_ or using GitHub's native support.
 
 The flowgraph below would appear like this:
 
 .. code-block:: python
 
+    import os
+    import tempfile
+
     from hammer.flowgraph import Graph, Node
+
+    td = tempfile.mkdtemp()
 
     syn = Node(
         "syn", "nop",
@@ -140,7 +151,6 @@ Here are the contents of ``graph-viz.md`` after calling ``g.to_mermaid()``:
 .. code-block:: markdown
 
     ```mermaid
-    
     stateDiagram-v2
         syn --> syn_to_par
         syn_to_par --> par
@@ -163,3 +173,8 @@ The flowgraph frontend has a number of caveats that prevent it from full parity 
 
 * If flows are constructed in a Python interactive session, then errors from the underlying tool do *not* propagate to the flowgraph and thus render the interactive session unusable.
   This can be worked around by embedding the flow in a Python script and running it from the command line.
+
+.. note::
+    In SledgeHammer, a node runs its action through the same dependency check as ``hammer-vlsi``, with its push directory as the object directory, but it cannot pass ``--force`` or ``--local``.
+    A ``drc`` or ``lvs`` node, or a ``syn`` or ``par`` node without step options, whose inputs have not changed since its last successful run in that directory is skipped but still marked ``COMPLETE``.
+    Step options make a ``syn`` or ``par`` node run even when nothing has changed; with Genus, Innovus or OpenROAD, if they stop the tool before it writes its final outputs, the node ends ``INCOMPLETE`` and ``run`` stops.

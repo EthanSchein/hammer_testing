@@ -23,6 +23,12 @@ The `hammer-config library <https://github.com/ucb-bar/hammer/tree/master/hammer
 
     JSON/YAML files specified with ``-p`` later on the command line have higher precedence and keys appearing later if duplicated in a given file also take precedence. In the examples below, "Level #" will be used to denote the level of precedence of the configuration snippet.
 
+.. note::
+   In SledgeHammer, the ``-p`` files and their order are fixed in the DAG when ``sledgehammer buildfile`` generates it, and every ``sledgehammer`` run uses that list.
+   Run it from the vlsi directory (Chipyard's ``vlsi``, or ``e2e/``). Underneath, it runs ``make buildfile`` (``make build`` in ``e2e/``), which calls the ``build`` action.
+   If you add, remove or reorder a file, rerun ``sledgehammer buildfile``, and do the same after changing a key the DAG reads when it is generated, such as ``vlsi.inputs.hierarchical.*`` or ``vlsi.core.airflow_*``.
+   In ``e2e/``, delete ``hammer.d`` from the obj_dir first, or the ``make build`` underneath does nothing.
+
 The ``get_setting()`` method is available to all Hammer technology/tool plugins and hooks (see :ref:`hooks`).
 
 Basics
@@ -35,7 +41,7 @@ Basics
             adc: "yes"
             dac: "no"
 
-The basic idea of Hammer IR in YAML/JSON format is centered around a hierarchically nested tree of YAML/JSON dictionaries. For example, the above YAML snippet is translated to two variables which can be queried in code - ``foo.bar.adc`` would have ``yes`` and ``foo.bar.dac`` would have ``no``.
+The basic idea of Hammer IR in YAML/JSON format is centered around a hierarchically nested tree of YAML/JSON dictionaries. For example, the above YAML snippet is translated to two variables which can be queried in code: ``foo.bar.adc`` would have ``yes`` and ``foo.bar.dac`` would have ``no``.
 
 Overriding
 ----------
@@ -81,7 +87,7 @@ In Level 1:
 
 .. code-block:: yaml
 
-    foo.flash: yes
+    foo.flash: "yes"
 
 In Level 2 (located at /opt/foo):
 
@@ -103,7 +109,7 @@ Common meta actions
 
   .. code-block:: yaml
 
-    foo.flash: yes
+    foo.flash: "yes"
 
   Meta:
 
@@ -112,7 +118,7 @@ Common meta actions
     foo.pipeline: "${foo.flash}man"
     foo.pipeline_meta: subst
 
-  Result: ``get_setting("foo.flash")`` returns ``yesman``
+  Result: ``get_setting("foo.pipeline")`` returns ``yesman``
 
 * ``lazysubst``: by default, variables are only substituted from previous configs. Using ``lazysubst`` allows us to defer the substitution until the very end.
 
@@ -122,7 +128,7 @@ Common meta actions
 
   .. code-block:: yaml
 
-    foo.flash: yes
+    foo.flash: "yes"
 
   Level 2:
 
@@ -135,9 +141,9 @@ Common meta actions
 
   .. code-block:: yaml
 
-    foo.flash: no
+    foo.flash: "no"
 
-  Result: ``get_setting("foo.flash")`` returns ``yesman``
+  Result: ``get_setting("foo.pipeline")`` returns ``yesman``
 
   Example with ``lazysubst``:
 
@@ -145,7 +151,7 @@ Common meta actions
 
   .. code-block:: yaml
 
-    foo.flash: yes
+    foo.flash: "yes"
 
   Level 2:
 
@@ -158,19 +164,19 @@ Common meta actions
 
   .. code-block:: yaml
     
-    foo.flash: no
+    foo.flash: "no"
 
-  Result: ``get_setting("foo.flash")`` returns ``noman``
+  Result: ``get_setting("foo.pipeline")`` returns ``noman``
 
   In general, putting ``lazy`` in front of all other directives will defer the meta processing until the very end.
 
-* ``crossref`` - directly reference another setting. Example:
+* ``crossref``: directly reference another setting. Example:
 
   Level 1:
 
   .. code-block:: yaml
 
-    foo.flash: yes
+    foo.flash: "yes"
 
   Level 2:
 
@@ -183,7 +189,7 @@ Common meta actions
 
   You can also append/prepend instead of substitute using ``crossappendref`` and ``crossprependref``.
 
-* ``transclude`` - transclude the given path. Example:
+* ``transclude``: transclude the given path. Example:
 
   Level 1:
 
@@ -194,7 +200,7 @@ Common meta actions
 
   Result: ``get_setting("foo.bar")`` returns ``<contents of /opt/foo/myfile.txt>``
 
-* ``prependlocal`` - prepend the local path or package resource directory of this config file. Example:
+* ``prependlocal``: prepend the local path or package resource directory of this config file. Example:
 
   Level 1 (located at /opt/foo):
 
@@ -203,9 +209,9 @@ Common meta actions
     foo.bar: "myfile.txt"
     foo.bar_meta: prependlocal
 
-  Result: ``get_setting("foo.mob")`` returns ``/opt/foo/myfile.txt``
+  Result: ``get_setting("foo.bar")`` returns ``/opt/foo/myfile.txt``
 
-* ``deepsubst`` - like ``subst`` but descends into sub-elements. Example:
+* ``deepsubst``: like ``subst`` but descends into sub-elements. Example:
 
   Level 1:
 
@@ -218,11 +224,11 @@ Common meta actions
   .. code-block:: yaml
 
     foo.bar:
-      baz: "${foo.bar}45"
-      quux: "32${foo.bar}"
+      - baz: "${foo.bar}45"
+        quux: "32${foo.bar}"
     foo.bar_meta: deepsubst
 
-  Result: ``get_setting("foo.bar.baz")`` returns ``12345`` and ``get_setting("foo.bar.baz")`` returns ``32123``
+  Result: ``get_setting("foo.bar")`` returns ``[{"baz": "12345", "quux": "32123"}]``
 
 Type Checking
 -------------
@@ -246,6 +252,11 @@ With the ``ruamel.yaml`` package, Hammer can emit what files have modified any c
 Turning on key history is accomplished with the ``--dump-history`` command-line flag.
 The file is named ``{action}-output-history.yml`` and is located in the output folder of the given action.
 
+.. note::
+   In SledgeHammer, ``sledgehammer`` runs never pass ``--dump-history``, so they write no history file.
+   Under ``hammer-vlsi --dump-history``, the syn, par, drc and lvs actions write it only when they run: if the dependency check finds nothing changed and skips the action, add ``--force``.
+   Every file in ``synthesis.inputs.input_files`` must also exist, or the action fails with ``RTL file not found`` before it writes anything, so point ``input_files`` at real files when you try the examples below.
+
 Example with the file ``test-config.yml``:
 
   .. code-block:: yaml
@@ -265,11 +276,11 @@ Example with the file ``test-config.yml``:
   .. code-block:: yaml
 
     synthesis.inputs.input_files:  # Modified by: test-config.yml
-      - LICENSE
-      - README.md
+      - foo
+      - bar
     synthesis.inputs.top_module: z1top.xdc # Modified by: test-config.yml
 
-    vlsi.core.technology: nop # Modified by: test-config.yml
+    vlsi.core.technology: hammer.technology.nop # Modified by: test-config.yml
     vlsi.core.synthesis_tool: hammer.synthesis.nop # Modified by: test-config.yml
 
 Example with the files ``test-config.yml`` and ``test-config2.yml``, respectively:
@@ -295,12 +306,13 @@ Example with the files ``test-config.yml`` and ``test-config2.yml``, respectivel
     vlsi:
         core:
             technology: "${foo.subst}"
+            technology_meta: lazysubst
 
             par_tool: "hammer.par.nop"
 
     foo.subst: "hammer.technology.nop2"
 
-``test/syn-rundir/par-output-history.yml`` after executing the command ``hammer-vlsi --dump-history -p test-config.yml -p test-config2.yml --obj_dir test syn-par``:
+``test/par-rundir/par-output-history.yml`` after executing the command ``hammer-vlsi --dump-history -p test-config.yml -p test-config2.yml --obj_dir test syn-par``:
 
   .. code-block:: yaml
 
@@ -328,9 +340,9 @@ The comments must be structured like so in order to be read properly:
     foo: bar # this is a comment 
     # this is another comment for the key "foo"
 
-Hammer will take the descriptions from any ``defaults.yml`` files.
+Hammer will take the descriptions from its own ``hammer/config/defaults.yml`` file only.
 
-  .. code-block::yaml
+  .. code-block:: yaml
 
     foo.bar:
       apple: banana # type of fruit
@@ -350,7 +362,7 @@ Running ``hammer-vlsi -p test-config.yml info`` (assuming the above configuratio
     Key: foo.bar.apple
     Value: banana
     Description: # type of fruit
-    History: ["defaults.yml"]
+    History: no history provided
     ----------------------------------------
 
     Continue querying keys? [y/n]: y
@@ -365,10 +377,15 @@ Running ``hammer-vlsi -p test-config.yml info`` (assuming the above configuratio
     Key: foo.bar.price
     Value: 2
     Description: # price of fruit
-    History: ["defaults.yml"]
+    History: no history provided
     ----------------------------------------
 
 Keys are queried post-resolution of all meta actions, so their values correspond to the project configuration after other actions like ``syn`` or ``par``.
+
+.. note::
+   In SledgeHammer, ``info`` is not a stage: ``sledgehammer info`` runs Airflow's own ``info`` command, not this action.
+   SledgeHammer's own keys (``vlsi.pd_cache.*``, ``vlsi.substep_resume.*``, ``vlsi.error_scan.*`` and ``vlsi.core.airflow_*``) are in ``hammer/config/defaults.yml`` with a one-line description each, so you can read them there, and this action lists and describes them too.
+   `ENVIRONMENT_VARIABLES.md <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/ENVIRONMENT_VARIABLES.md>`_ describes most of them.
 
 Reference
 ---------
@@ -378,4 +395,4 @@ For a more comprehensive view, please consult the ``hammer.config`` API document
 * https://github.com/ucb-bar/hammer/blob/master/hammer/config/config_src.py
 * https://github.com/ucb-bar/hammer/blob/master/tests/test_config.py
 
-In ``config_src.py``, most supported meta actions are contained in the ``directives`` list of the ``get_meta_directives`` method.
+In ``config_src.py``, most supported meta actions are contained in the ``directives`` dictionary of the ``get_meta_directives`` function.

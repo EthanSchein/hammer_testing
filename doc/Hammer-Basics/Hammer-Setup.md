@@ -8,9 +8,16 @@ The Hammer setup is different based on its usecase, which are summarized as foll
 * [Power User Setup](#power-user-setup): Modify Hammer and see these changes immediately reflected when calling Hammer [recommended].
 * [Developer Setup](#developer-setup): Developing major Hammer features, adding dependencies, running Hammer unit tests, etc.
 
+> **SledgeHammer:** The User Setup and Power User Setup below install upstream Hammer, which has no `sledgehammer` CLI.
+> To set up SledgeHammer, run `./scripts/uv_setup.sh` from the root of your SledgeHammer checkout, as [Workspace setup](https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/WORKSPACE_SETUP.md) describes.
+
 Note that some tools and technologies have extra setup requirements:
-* [ASAP7 setup directions](https://github.com/ucb-bar/hammer/blob/master/hammer/technology/asap7/README.md)
-* [Sky130 & OpenROAD tools setup](https://hammer-vlsi.readthedocs.io/en/stable/Examples/openroad-sky130.html)
+* [ASAP7 setup directions](https://github.com/lawrencejrhee/hammer/blob/master/hammer/technology/asap7/README.md)
+* [Sky130 & OpenROAD tools setup](../Examples/openroad-sky130.md)
+
+> **SledgeHammer:** The RTL fingerprint needs the `slang` binary at version 11.0 (`SLANG_VERSION` in `hammer/vlsi/rtl_check.py`), which `./scripts/uv_setup.sh` downloads to `tools/slang/slang` on Linux x86_64 and macOS arm64; on other platforms, install slang 11.0 yourself and set `SLANG_BIN` to its path.
+> Hammer uses `$SLANG_BIN` if it is set, otherwise `slang` on `PATH`, otherwise `tools/slang/slang` in the checkout, and counts slang as missing if that binary is not version 11.0 or `SLANG_BIN` is not a file.
+> Without slang, or when slang cannot parse the RTL, the fingerprint falls back to a hash of the RTL files' bytes and logs a warning, so comment and whitespace edits count as RTL changes and files pulled in by `` `include `` are not covered.
 
 ## User Setup
 
@@ -47,7 +54,7 @@ pip install -e .  # run this after activating your target environment
 
 ### Installing from Another Poetry Project
 
-Hammer tool (e.g. `hammer-cadence-plugins`) and PDK plugin repositories are poetry projects (with a `pyproject.toml` in their root).
+Hammer tool (e.g. `hammer-mentor-plugins`) and PDK plugin repositories are poetry projects (with a `pyproject.toml` in their root).
 To depend on Hammer as a source dependency, first clone Hammer somewhere on your disk.
 Then add this snippet to the tool/PDK plugin repo's `pyproject.toml` (and remove any PyPI dependency on Hammer):
 
@@ -64,31 +71,33 @@ You only need to specify `extras` if you need the `asap7` optional dependency (g
 
 ## Developer Setup
 
-1. Clone Hammer with `git`
+1. Clone SledgeHammer with `git` (upstream `ucb-bar/hammer` still uses poetry, so the uv steps below do not apply to it)
 
 ```shell
-git clone git@github.com:ucb-bar/hammer
+git clone git@github.com:lawrencejrhee/hammer
 cd hammer
 ```
-2. [Install poetry](https://python-poetry.org/docs/master/) to manage the development virtualenv and dependencies
+2. [Install uv](https://docs.astral.sh/uv/getting-started/installation/) to manage the development virtualenv and dependencies
 
 ```shell
-curl -sSL https://install.python-poetry.org | python3 -
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-3. Create a poetry-managed virtualenv using the dependencies from `pyproject.toml`
+3. Create a uv-managed virtualenv using the dependencies from `pyproject.toml` and `uv.lock`
 
 ```shell
 # create the virtualenv inside the project folder (in .venv)
-poetry config virtualenvs.in-project true
-poetry install
+uv sync --group dev
 ```
 
+For the full SledgeHammer stack (Airflow, the Postgres driver, slang), run `./scripts/uv_setup.sh` instead, which runs this sync for you.
+Do not run `uv sync` after it: Airflow is installed outside the lock, so a sync uninstalls it.
+
 4. Activate the virtualenv. Within the virtualenv, Hammer is installed and you can access its scripts defined in
-    `pyproject.toml` (in `[tool.poetry.scripts]`)
+    `pyproject.toml` (in `[project.scripts]`)
 
 ```shell
-poetry shell
+source .venv/bin/activate
 hammer-vlsi -h
 ```
 
@@ -99,7 +108,7 @@ You should install the [Pydantic plugin](https://plugins.jetbrains.com/plugin/12
 
 ### Unit Tests with pytest
 
-Within the poetry virtualenv, from the root of Hammer, run the tests (`-v` will print out each test name explicitly)
+Within the virtualenv, from the root of Hammer, run the tests (`-v` will print out each test name explicitly)
 
 ```shell
 pytest tests/ -v
@@ -135,7 +144,7 @@ pytest tests/test_build_systems.py -k "flat_makefile" -rA -v
 
 ### Type Checking with pyright
 
-Run: `poetry run pyright`
+Within the virtualenv, run: `pyright`
 
 ### Testing Different Python Versions with tox
 
@@ -152,23 +161,25 @@ Then restart your shell again.
 
 2. Install Python versions
 
-See the `.python-version` file at the root of hammer and install those Python versions using `pyenv`.
+Install the Python versions in the tox `envlist` (in `pyproject.toml` under `[tool.tox]`) using `pyenv`.
+The `.python-version` file at the root of hammer names only `3.11` (the version uv builds `.venv` with), so select them for your shell with `pyenv shell`.
 
 ```shell
 pyenv install 3.9.13
 pyenv install 3.10.6
+pyenv shell 3.9.13 3.10.6
 ```
 
-Once the Python interpreters are installed, run `pyenv versions` from the root of hammer.
+Once the Python interpreters are selected, run `pyenv versions` from the root of hammer.
 
 ```shell
 pyenv versions
   system
-* 3.9.13 (set by .../hammer/.python-version)
-* 3.10.6 (set by .../hammer/.python-version)
+* 3.9.13 (set by PYENV_VERSION environment variable)
+* 3.10.6 (set by PYENV_VERSION environment variable)
 ```
 
-3. From within your `poetry` virtualenv, run `tox`
+3. From within the virtualenv, run `tox`
 
 ```shell
 tox
@@ -191,16 +202,19 @@ tox -e py39 -- -k "lsf" -v
 ### Adding / Updating Dependencies
 
 To add a new Python (`pip`) dependency, modify `pyproject.toml`.
-If the dependency is only used for development, add it under the key `[tool.poetry.dev-dependencies]`, otherwise add it under the key `[tool.poetry.dependencies]`.
-Then run `poetry update` and `poetry install`.
-The updated `poetry.lock` file should be committed to Hammer.
+If the dependency is only used for development, add it to the `dev` list under the key `[dependency-groups]`, otherwise add it to `dependencies` under the key `[project]`.
+Then run `uv lock` and `uv sync --group dev` (rerun `./scripts/uv_setup.sh` instead if you set up with it).
+The updated `uv.lock` file should be committed to Hammer.
 
 To update an existing dependency, modify `pyproject.toml` with the new version constraint.
-Run `poetry update` and `poetry install` and commit `poetry.lock`.
+Run `uv lock --upgrade-package <name>` and `uv sync --group dev` (or rerun `./scripts/uv_setup.sh` in place of the sync) and commit `uv.lock`.
 
 ### Building Documentation
 
-First, generate the `schema.json` file from within your poetry virtualenv:
+The Sphinx build needs `myst-parser` from the dev group.
+The default `./scripts/uv_setup.sh` profile uninstalls it before it installs Airflow, so build the docs from a virtualenv made by `uv sync --group dev` alone, such as a separate clone.
+
+First, generate the `schema.json` file from within your virtualenv:
 
 ```shell
 python3 -c "from hammer.tech import TechConfig; print(TechConfig.schema_json(indent=2))" > doc/Technology/schema.json
@@ -218,12 +232,13 @@ Then:
 Build a sdist and wheel (results are in `dist`):
 
 ```shell
-poetry build
+uv build
 ```
+
+`hammer-vlsi` on PyPI is upstream Hammer's, so `.github/workflows/publish.yml` publishes only from `ucb-bar/hammer`, never from a fork.
 
 To publish on TestPyPI:
 
 1. Create an account on [TestPyPi](https://test.pypi.org/)
-2. Note the source repository `testpypi` in `pyproject.toml` under the key `[tool.poetry.source]`
-   - To add another [PyPI repository to poetry](https://python-poetry.org/docs/master/repositories/): `poetry source add <source name> <source url>`
-3. Publish: `poetry publish --repository testpypi -u <username> -p <password>`
+2. Create an API token in your TestPyPI account settings
+3. Publish: `uv publish --publish-url https://test.pypi.org/legacy/ --token <token>`

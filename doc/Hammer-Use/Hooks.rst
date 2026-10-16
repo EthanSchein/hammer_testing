@@ -16,8 +16,13 @@ Hook methods need to take in an instance of a particular ``HammerTool``, which p
 Hooks (depending on how they are included, see below) get turned into step objects that can be targeted with ``--from/after/to/until_step`` and other hooks.
 
 Hooks can live in a Python file inside the design root so that it is available to the class that needs to extend the default ``CLIDriver``.
-An example of some skeletons of hooks are found in `Chipyard <https://github.com/ucb-bar/chipyard/blob/main/vlsi/example-vlsi>`__.
+Some example skeletons of hooks are found in `Chipyard <https://github.com/ucb-bar/chipyard/blob/main/vlsi/example-vlsi>`__.
 For more comprehensive examples, refer to the hooks unit tests in the ``TestHammerToolHooks`` class of `test_hooks.py <https://github.com/ucb-bar/hammer/blob/master/tests/test_hooks.py>`__.
+
+.. note::
+    In SledgeHammer, each stage hashes the code of the technology and user hooks it runs (comments and formatting are ignored), and a changed hook makes that stage rerun.
+    Write each hook as a named function (``def``) in a source file: when the source of a hook cannot be read and parsed on its own, the stage fails with ``Failed to compute hook fingerprint``.
+    Edits to the hook functions of a tool plugin, or to helper functions that a hook calls, are not detected (only the plugin's ``get_tool_hooks`` method is hashed), so after such an edit rerun the stage with ``--force``, for example ``sledgehammer par --force``.
 
 Including Hooks
 ----------------
@@ -42,11 +47,21 @@ To get around this, a concept of "persistence" is implemented with the following
 
 All persistent hooks are NOT targetable by flow control options, as their invocation location may vary.
 However, persistent hooks ARE targetable by ``make_replacement/pre_insertion/post_insertion/removal_hook``.
-In this case, the hook that replaces or is inserted pre/post the target persistent hook takes on the persistence properties of the target persistence hook.
+In this case, the hook that replaces or is inserted pre/post the target persistent hook takes on the persistence properties of the target persistent hook.
+
+.. note::
+    In SledgeHammer, when a syn or par run stops partway, the next plain run continues from the last checkpoint the tool confirmed writing, so settings that checkpoints do not keep need persistent hooks even if you never pass a step flag.
+    See `SUBSTEP_RESUME.md <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/SUBSTEP_RESUME.md>`_.
+    To pick the step yourself, ``sledgehammer`` takes ``--from_step``, ``--to_step`` and ``--only_step`` for syn or par (choose the stage with ``--steps-stage``), but not ``--after_step`` or ``--until_step``.
 
 Some examples of these methods are found in the Chipyard example, linked above.
 
-A list of these hooks must be provided in an implementation of method such as ``get_extra_par_hooks`` in the command-line driver. This new file becomes the entry point into Hammer, overriding the default ``hammer-vlsi`` executable.
+A list of these hooks must be provided in an implementation of a method such as ``get_extra_par_hooks`` in the command-line driver. This new file becomes the entry point into Hammer, overriding the default ``hammer-vlsi`` executable.
+
+.. note::
+    In SledgeHammer, every DAG task runs the executable that ran the ``build`` action which generated the DAG, so generate the DAG through your driver: run ``sledgehammer buildfile`` from Chipyard's vlsi directory (it runs ``make buildfile``, which calls your driver).
+    A DAG generated with plain ``hammer-vlsi`` runs your stages without your hooks.
+    Edits to the hooks in your driver take effect on the next ``sledgehammer`` run without regenerating the DAG.
 
 Technology, Tool, and User-Provided Hooks
 -----------------------------------------
@@ -54,17 +69,17 @@ Technology, Tool, and User-Provided Hooks
 .. note::
     Hooks may be provided by the technology plugin, the tool plugin, and/or the user. The order of step & hook priority is as follows, from lowest to highest:
     
-    #. Technology default steps
-    #. Technology plugin hooks
+    #. Tool default steps
     #. Tool plugin hooks
+    #. Technology plugin hooks
     #. User hooks
 
-A technology plugin specifies hooks in its ``__init__.py`` (as a method inside its subclass of ``HammerTechnology``). It should implement a ``get_tech_<action>_hooks(self, tool_name: str)`` method. The tool name parameter may be checked by the hook implementation because multiple tools may implement the same action. Technology plugin hooks may only target tool default steps to insert/replace.
+A technology plugin specifies hooks in its ``__init__.py`` (as a method inside its subclass of ``HammerTechnology``). It should implement a ``get_tech_<action>_hooks(self, tool_name: str)`` method. The tool name parameter may be checked by the hook implementation because multiple tools may implement the same action. Technology plugin hooks may target tool default steps and tool plugin hooks to insert/replace.
 
-The included ASAP7 technology plugin provides an example of how to inject two different types of hooks: 1) a persistent hook invoked anytime after the ``init_design`` step to set top & bottom routing layers, and 2) two post-insertion hooks, one to modify the floorplan for DRCs and the other to scale down a GDS post-place-and-route using the ``gdstk`` or ``gdspy`` GDS manipulation utilities.
-Note that the persistent hook that is included does not necessarily need to be persistent (Innovus does retain this setting in snapshot databases), but it serves as an example for building your own tech plugin.
+The included ASAP7 technology plugin provides an example of how to inject two different types of hooks: 1) a persistent hook invoked anytime after the ``init_design`` step to apply Innovus timing and via settings, and 2) two post-insertion hooks, one to modify the floorplan for DRCs and the other to scale down a GDS post-place-and-route using the ``gdstk`` or ``gdspy`` GDS manipulation utilities.
+Note that the persistent hook that is included does not necessarily need to be persistent (Innovus does retain these settings in snapshot databases), but it serves as an example for building your own tech plugin.
 
-A tool plugin specifies hooks in its ``__init__.py`` (as a method inside its subclass of ``HammerTool``). It should implement a ``get_tool_hooks(self)`` method. In contrast to the tech-supplied hooks, the action name and tool name are not specified because a tool instance can only correspond to a single action. Tool plugin hooks may target its own default steps and technology plugin hooks to insert/replace.
+A tool plugin specifies hooks in its ``__init__.py`` (as a method inside its subclass of ``HammerTool``). It should implement a ``get_tool_hooks(self)`` method. In contrast to the tech-supplied hooks, the action name and tool name are not specified because a tool instance can only correspond to a single action. Tool plugin hooks may only target its own default steps and hooks to insert/replace.
 
 A user specifies hooks in the command-line driver and should implement a ``get_extra_<action>_hooks(self)`` method. User hooks may target tool default steps, technology plugin hooks, and tool plugin hooks to insert/replace. A good example is the ``example-vlsi`` file in the Chipyard example, which implements a ``get_extra_par_hooks(self)`` method that returns a list of hook inclusion methods. 
 

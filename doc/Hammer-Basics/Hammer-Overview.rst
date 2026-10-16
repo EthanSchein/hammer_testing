@@ -1,9 +1,12 @@
 Hammer Overview
 ================================
 
-Hammer has a set of actions and automatically takes the output of one action and converts it into the input for another.  For instance, a synthesis action will output a mapped verilog file which will then automatically by piped to the place-and-route input when a place-and-route action is called.
+Hammer has a set of actions and automatically takes the output of one action and converts it into the input for another.  For instance, a synthesis action will output a mapped verilog file which will then automatically be piped to the place-and-route input when a place-and-route action is called.
 
 A user's Hammer environment is typically separated into four different components: core Hammer, one or more tool plugins, a technology plugin, and a set of project-specific Hammer input files. Hammer is meant to expose a set of generalized APIs that are then implemented by tool- and technology-specific plugins.
+
+.. note::
+    In SledgeHammer, there is one more component: an Airflow stack that runs each design's flow as a DAG, with Postgres holding Airflow's run state, the PD cache of stage results and sub-step checkpoints. See `Workspace setup <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/WORKSPACE_SETUP.md>`_ to set it up.
 
 Hammer is included in a larger project called `Chipyard <https://github.com/ucb-bar/chipyard>`__ which is the unified repo for an entire RTL, simulation, emulation, and VLSI flow from Berkeley Architecture Research. There is an in-depth Hammer demo there, and it is a great place to look at a typical Hammer setup.
 
@@ -15,7 +18,10 @@ Hammer provides the Python backend for a Hammer project and exposes a set of API
 Hammer takes its inputs and serializes its state in the form of YAML and JSON files, called Hammer IR. The designer sets a variety of settings in the form of keys in different namespaces that are designated in Hammer to control its functionality. 
 
 .. note::
-    Supported keys are contained in `defaults.yml <https://github.com/ucb-bar/hammer/blob/master/hammer/config/defaults.yml>__`. This file provides sensible defaults that may be overridden or are set to null if they must be provided by the designer.
+    Supported keys are contained in `defaults.yml <https://github.com/ucb-bar/hammer/blob/master/hammer/config/defaults.yml>`__. This file provides sensible defaults that may be overridden or are set to null if they must be provided by the designer.
+
+.. note::
+    In SledgeHammer, ``hammer/config/defaults.yml`` also declares the keys added on top of Hammer (``vlsi.pd_cache.enabled``, ``vlsi.pd_cache.ledger_enabled``, ``vlsi.pd_cache.project``, ``vlsi.substep_resume.*``, ``vlsi.error_scan.*`` and ``vlsi.core.airflow_*``). They choose how a stage runs, not what it produces, so the dependency check and the PD cache key leave them out. `ENVIRONMENT_VARIABLES.md <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/ENVIRONMENT_VARIABLES.md>`_ describes most of them.
 
 Here is an example of a snippet that would be included in the user's input configuration.
 
@@ -29,16 +35,16 @@ Here is an example of a snippet that would be included in the user's input confi
 
 This demonstrates two different namespaces, ``vlsi.core`` and ``vlsi.inputs``, and then two different keys, ``technology`` and ``supplies``, which are set to the ``asap7`` technology and 0.7 Volts supply voltage, respectively.
 
-Further details about these keys and how they are manipulated is found in the :ref:`config` section.
+Further details about these keys and how they are manipulated are found in the :ref:`config` section.
 
 Tech Plugins
 -------------------------------
 
-A technology plugin consists of two or more files: a ``*.tech.json`` and a ``defaults.yml``.
+A technology plugin consists of a ``defaults.yml`` and a technology configuration: either a ``*.tech.json`` (or ``*.tech.yml``) file, or one the plugin builds in Python in its ``gen_config()`` method, as ``sky130`` does.
 
-The ``*.tech.json`` contains pointers to relevant PDK files and fundamental technology constants.  These values are not meant to be overriden, nor can they be for the time being.
+The technology configuration contains pointers to relevant PDK files and fundamental technology constants.  These values are not meant to be overridden. As a last resort, ``vlsi.technology.manually_override_pdk_collateral: true`` with a list of replacement files in ``vlsi.technology.override_libraries`` replaces individual PDK files (see the ``sky130`` ``defaults.yml``).
 
-``defaults.yml`` sets default technology variables for Hammer to consume, which may be specific to this technology or generic to all. These values may be overriden by design-specific configurations. An example of this is shown in the open-source technology plugins in ``hammer/technology/``, such as ``asap7``, and how to setup a technology plugin is documented in more detail in the :ref:`technology` section.
+``defaults.yml`` sets default technology variables for Hammer to consume, which may be specific to this technology or generic to all. These values may be overridden by design-specific configurations. An example of this is shown in the open-source technology plugins in ``hammer/technology/``, such as ``asap7``, and how to set up a technology plugin is documented in more detail in the :ref:`technology` section.
 
 .. note:: Unless you are a UCB BAR or BWRC affiliate or have set up a 3-way technology NDA with us, we cannot share pre-built proprietary technology plugin repositories.
 
@@ -49,7 +55,7 @@ A Hammer tool plugin actually implements tool-specific steps of the VLSI flow in
 The TCL commands input to the tool are created using technology and design settings provided by the designer.
 
 
-There are currently three Hammer tool plugin repositories for commercial tools: ``hammer-cadence-plugins``, ``hammer-synopsys-plugins``, and ``hammer-mentor-plugins``. In them are tool plugin implementations for actions including synthesis, place-and-route, DRC, LVS, and simulation. ``hammer-cadence-plugins`` and ``hammer-synopsys-plugins`` are publicly available; however, users must request access to ``hammer-mentor-plugins``.
+The Cadence and Synopsys tool plugins are included in ``hammer/`` under their respective actions (for example ``hammer/synthesis/genus``, ``hammer/par/innovus`` and ``hammer/sim/vcs``). The plugins for Mentor (now Siemens) tools, such as Calibre DRC and LVS, are in a separate repository, ``hammer-mentor-plugins``, which users must request access to.
 
 .. _plugins-access:
 .. note:: If you are not a UCB BAR or BWRC affiliate and have access to Mentor Graphics (now Siemens) tools, please email hammer-plugins-access@lists.berkeley.edu with a request for access to the hammer-mentor-plugins repository. MAKE SURE TO INCLUDE YOUR GITHUB ID IN YOUR EMAIL AND YOUR ASSOCIATION TO SHOW YOU HAVE LICENSED ACCESS TO THE TOOLS. There will be no support guarantee for the plugin repositories, but users are encouraged to file issues and contribute patches where needed.
@@ -60,13 +66,13 @@ These plugins implement many of the common steps of a modern physical design flo
 Because of this, Hammer has an "escape-hatch" mechanism, called a hook, that allows the designer to inject custom steps between the default steps provided by the CAD tool plugin.
 Hooks are python methods that emit TCL code and may be inserted before or after an existing step or replace the step entirely.
 This allows the designer to leverage the APIs built into Hammer while easily inserting custom steps into the flow.
-Hooks are discussed in more detail in the "Example usage" portion of the Hammer documentation.
+Hooks are discussed in more detail in the :ref:`hooks` section.
 
 Calling Hammer
 -------------------------------
 
 To use Hammer on the command line, the designer will invoke the ``hammer-vlsi`` utility.
-This is calling the ``__main__()`` method of the ``CLIDriver`` class. An example invocation is below:
+This calls the ``main()`` method of the ``CLIDriver`` class, which exits with the action's return code. An example invocation is below:
 
 .. _call-example:
 .. code-block:: bash
@@ -80,6 +86,13 @@ Using hooks requires the designer to extend the ``CLIDriver`` class. A good exam
 
     example-vlsi -e env.yml -p config.yml --obj_dir build par
 
+.. note::
+    In SledgeHammer, you run stages with the ``sledgehammer`` command instead of calling the driver for each one.
+    With ``vlsi.core.build_system: sledgehammer`` in your project config, the ``build`` action writes an Airflow DAG next to ``hammer.d`` and links it into the Airflow dags folder.
+    You run that action with ``sledgehammer buildfile`` from the vlsi directory (or ``e2e/``): underneath, it runs ``make buildfile`` (``make build`` in ``e2e/``) with the ``sledgehammer`` venv's Python first on ``PATH``, so you don't activate a venv, then prints the registered DAG id and the command to run next.
+    With the stack running (``sledgehammer`` with no arguments starts it), ``sledgehammer par`` or ``sledgehammer run syn par`` runs stages through that DAG, and each task runs the driver that ran ``build`` with the flags described below.
+    See the `command reference <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/CLI_REFERENCE.md>`_.
+
 Hammer configuration files must be in YML or JSON format, 
 and are divided into environment and project configurations.
 The environment configuration file, which in this case is ``env.yml``, is passed to Hammer using the ``-e`` flag.
@@ -87,7 +100,7 @@ The environment configuration file, which in this case is ``env.yml``, is passed
 The project configuration file is passed in using the ``-p`` flag.
 In this case, there is only one, ``config.yml``, and it needs to set all the required keys for the step of the flow being run.
 Passing in multiple files looks like ``-p config1.yml -p config2.yml``. Refer to the :ref:`config` section for the implications of multiple config files.
-The environment settings take precedence over all project configurations, and are not propagated to the output configuration files after each action.
+Project configurations take precedence over the environment settings, and environment settings are not propagated to the output configuration files after each action.
 The order of precedence for the project configs reads from right to left (i.e. each file overrides all files to its left in the command line).
 
 
@@ -98,7 +111,13 @@ Finally, ``par`` designates that this is a place-and-route action.
 
 In this case, Hammer will write outputs to the path ``$PWD/build/par-rundir``.
 
-For the full list of Hammer command-line arguments, run `hammer-vlsi --help` or take a peek in the ``hammer/vlsi/cli_driver.py`` file.
+.. note::
+    In SledgeHammer, every tool action first fingerprints the RTL in ``synthesis.inputs.input_files``, so those files must exist even for ``par``.
+    ``syn``, ``par``, ``drc`` and ``lvs`` then compare the merged configuration (environment settings included) and the RTL, hook and library collateral fingerprints with ``build/master_database.json``: if nothing the stage depends on has changed, the action prints ``Database unchanged, can skip par`` and exits 0 without running the tool, unless you pass ``--force``.
+    After a failed Genus or Innovus run, the next ``syn`` or ``par`` with unchanged inputs resumes from the newest checkpoint the tool confirmed writing, and with the PD cache on (the default under the ``sledgehammer`` launcher) a matching stored result is restored instead of running the tool.
+    See `SUBSTEP_RESUME.md <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/SUBSTEP_RESUME.md>`_ and `PD_STORE_README.md <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/PD_STORE_README.md>`_.
+
+For the full list of Hammer command-line arguments, run ``hammer-vlsi --help`` or take a peek in the ``hammer/vlsi/cli_driver.py`` file.
 
 Summary
 -------

@@ -9,7 +9,7 @@ For syntax details about the Hammer IR needed to use these APIs, refer to the `d
 
 Power Specification
 -------------------
-Simple power specs are specified using the Hammer IR key ``vlsi.inputs.supplies``, which is then translated into a a Supply object. ``hammer_vlsi_impl`` exposes the Supply objects to other APIs (e.g. power straps) and can generate the CPF/UPF files depending on which specification the tools support. Multi-mode multi-corner (MMMC) setups are also available by setting ``vlsi.inputs.mmmc_corners`` and manual power spec definitions are supported by setting the relevant ``vlsi.inputs.power_spec...`` keys.
+Simple power specs are specified using the Hammer IR key ``vlsi.inputs.supplies``, which is then translated into a Supply object. ``hammer_vlsi_impl`` exposes the Supply objects to other APIs (e.g. power straps) and can generate the CPF/UPF files depending on which specification the tools support. Multi-mode multi-corner (MMMC) setups are also available by setting ``vlsi.inputs.mmmc_corners`` and manual power spec definitions are supported by setting the relevant ``vlsi.inputs.power_spec...`` keys.
 
 Timing Constraints
 ------------------
@@ -25,20 +25,21 @@ Bumps
 -----
 Bump constraints are specified using the Hammer IR key ``vlsi.inputs.bumps``. Rectangular-gridded bumps are supported, although bumps at fractional coordinates in the grid and deleted bumps are allowed. The place-and-route tool plugin translates the list of bump assignments into the appropriate commands to place them in the floorplan and enable flip-chip routing. The bumps API is also used by the PCB plugin to emit the collateral needed by PCB layout tools such as Altium Designer. This API ensures that the bumps are always in correspondence between the chip and PCB.
 
-The visualization tool mentioned above can also display bump placement and assignments. There are options to view the bumps from the perspective of the ASIC designer or the PCB designer. The views are distinguishable by a reference dot displayed in the left and right corners for the ASIC and PCB perspectives, respectively.
+The visualization tool mentioned above can also display bump placement and assignments. There are options to view the bumps from the perspective of the ASIC designer or the PCB designer. The views are distinguishable by a reference dot displayed in the right and left corners for the ASIC and PCB perspectives, respectively.
 
 Pins
 ----
-Pin constraints are specified using the Hammer IR key ``vlsi.inputs.pin``. PinAssignments objects are generated and passed to the place-and-route tool to place pins along specified block edges on specified metal layers. Preplaced (e.g. hard macros in hierarchical blocks) pins are also supported so that they are not routed. Additional work is planned to use this API in conjunction with the placement constraints API to allow for abutment of hierarchical blocks, which requires pins to be aligned on abutting edges.
+Pin constraints are specified using the Hammer IR key ``vlsi.inputs.pin``. PinAssignment objects are generated and passed to the place-and-route tool to place pins along specified block edges on specified metal layers. Preplaced (e.g. hard macros in hierarchical blocks) pins are also supported so that they are not routed. Additional work is planned to use this API in conjunction with the placement constraints API to allow for abutment of hierarchical blocks, which requires pins to be aligned on abutting edges.
 
 Power Straps
 ------------
-Power strap constraints are specified using multiple Hammer IR keys in the ``par`` namespace.You can find the keys in <tech>/defaults.yml under the tech plugin directory. An example from `asap7 <https://github.com/ucb-bar/hammer/blob/master/hammer/technology/asap7/defaults.yml>`__ is as follows:
+Power strap constraints are specified using multiple Hammer IR keys in the ``par`` namespace. You can find the keys in <tech>/defaults.yml under the tech plugin directory. An example from `asap7 <https://github.com/ucb-bar/hammer/blob/master/hammer/technology/asap7/defaults.yml>`__ is as follows:
 
 .. literalinclude:: ../../hammer/technology/asap7/defaults.yml
    :language: yaml
    :linenos:
-   :lines: 60-81
+   :start-at: par.power_straps_mode:
+   :end-at: power_utilization_M9:
    :caption: ASAP7 default power straps setting
 ..
 
@@ -47,18 +48,20 @@ The default keys for all hammer configs are defined in the `defaults.yml <https:
 .. literalinclude:: ../../hammer/config/defaults.yml
    :language: yaml
    :linenos:
-   :lines: 572-610
+   :start-at: generate_power_straps_method:
+   :end-at: pattern:
    :caption: Hammer global default power straps setting
 ..
 
 The currently supported API supports power strap generation by tracks, which auto-calculates power strap width, spacing, set-to-set distance, and offsets based on basic DRC rules specified in the technology Stackup object. 
 
-The technology Stackup information (“stackups”) can be found in the <tech>.tech.json file under the tech plugin directory. The “stackups” usually are located near the end of the <tech> ``.tech.json`` file. An example from `asap7 <(https://github.com/ucb-bar/hammer/blob/master/hammer/technology/asap7/asap7.tech.json>`__ is as follows:
+The technology Stackup information (“stackups”) can be found in the <tech>.tech.json file under the tech plugin directory. The “stackups” usually are located near the end of the <tech> ``.tech.json`` file. An example from `asap7 <https://github.com/ucb-bar/hammer/blob/master/hammer/technology/asap7/asap7.tech.json>`__ is as follows:
 
 .. literalinclude:: ../../hammer/technology/asap7/asap7.tech.json
    :language: json
    :linenos:
-   :lines: 1364-1381
+   :start-at: "stackups": [
+   :end-before: "sites": [
    :caption: ASAP7 stackup object
 ..
 
@@ -67,7 +70,8 @@ The keys in the Stackup object are defined in `stackup.py <https://github.com/uc
 .. literalinclude:: ../../hammer/tech/stackup.py
    :language: none
    :linenos:
-   :lines: 79-98
+   :start-at: name: Metal layer name
+   :end-at: For most technologies, this comes from the technology plugin
    :caption: Description for a metal layer/stackup
 ..
 

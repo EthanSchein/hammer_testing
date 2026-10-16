@@ -21,7 +21,7 @@
 - [ ] Did you state the type-of-change/impact?
 - [ ] Did you delete any extraneous prints/debugging code?
 - [ ] (If applicable) Did you add documentation for the feature?
-- [ ] (If applicable) Did you update the `poetry.lock` file if you updated the requirements in `pyproject.toml`?
+- [ ] (If applicable) Did you update the `uv.lock` file if you updated the requirements in `pyproject.toml`?
 - [ ] (If applicable) Did you add a unit test demonstrating the PR?
 - [ ] (If applicable) Did you run this through the e2e integration tests?
 - [ ] (If applicable) Did you update the submodules in `e2e/` if this feature depends on updated plugins?

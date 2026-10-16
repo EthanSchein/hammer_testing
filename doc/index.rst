@@ -7,6 +7,11 @@
 Hammer is a physical design framework that wraps around vendor specific technologies and tools to provide a single API to create ASICs.
 Hammer allows for reusability in ASIC design while still providing the designers leeway to make their own modifications.
 
+.. note::
+   In SledgeHammer, you run flows with the ``sledgehammer`` command, which triggers the stages on an Airflow DAG, and you manage the Postgres PD cache with ``studio``.
+   The pages below describe upstream Hammer and its ``hammer-vlsi`` driver, which still runs each stage inside the DAG.
+   Start with `Workspace setup <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/WORKSPACE_SETUP.md>`_ and the `command reference <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/CLI_REFERENCE.md>`_.
+
 Introduction to Hammer
 ===============================
 
@@ -42,5 +47,4 @@ Indices and tables
 ==================
 
 * :ref:`genindex`
-* :ref:`modindex`
 * :ref:`search`

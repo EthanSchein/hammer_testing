@@ -1,3 +1,5 @@
+> **HISTORICAL (March 2026 manual walkthrough).** This is the original by-hand setup, kept for reference. Parts of it no longer match the code: `sledgehammer buildfile` now generates one DAG per build directory name and user and links it into the dags folder Airflow reads; `airflow.cfg` is tracked in git with its secrets blank; and the stack starts with `sledgehammer`. Today `./scripts/uv_setup.sh` does the environment setup. For the current guides, see [WORKSPACE_SETUP.md](WORKSPACE_SETUP.md) and [CLI_REFERENCE.md](CLI_REFERENCE.md). The **Today** notes below mark the steps that changed most.
+
 # Chipyard + SledgeHammer Setup with uv (PostgreSQL + Airflow)
 
 This document provides a **complete from-scratch guide** for setting up **Chipyard** with **Hammer (Sledgehammer)** VLSI framework, orchestrated by **Apache Airflow 3.x** with a **PostgreSQL** database backend, all managed by **[uv](https://github.com/astral-sh/uv)** instead of Poetry/Conda.
@@ -36,7 +38,7 @@ This document provides a **complete from-scratch guide** for setting up **Chipya
   - [Step 8: Clone Chipyard](#step-8-clone-chipyard)
   - [Step 9: Chipyard Build Setup (Optional)](#step-9-chipyard-build-setup-optional)
   - [Step 10: Modify Hammer Files for Airflow Compatibility](#step-10-modify-hammer-files-for-airflow-compatibility)
-  - [Step 11: Install libnsl Locally (RHEL 9)](#step-11-install-libnsl-locally-rhel-9--required-for-cadence-tools)
+  - [Step 11: Install libnsl Locally (RHEL 9)](#step-11-install-libnsl-locally-rhel-9-required-for-cadence-tools)
   - [Step 12: Update Airflow Configuration for DAGs](#step-12-update-airflow-configuration-for-dags)
   - [Step 13: Verify DAG Discovery](#step-13-verify-dag-discovery)
 - [Available DAGs](#available-dags)
@@ -158,6 +160,8 @@ git clone git@github.com:ucb-bar/hammer.git
 cd hammer
 ```
 
+> **Today**: clone the SledgeHammer fork, `git@github.com:lawrencejrhee/hammer.git`, instead. Stock Hammer has none of the SledgeHammer code. See [WORKSPACE_SETUP.md](WORKSPACE_SETUP.md).
+
 ### Step 1: Install uv
 
 ```bash
@@ -171,11 +175,11 @@ uv --version
 # Should show: uv 0.10.x or later
 ```
 
-That's it — no Python bootstrap, no pip, no wheel needed.
+That's it: no Python bootstrap, no pip, no wheel needed.
 
 ### Step 1.5: Set Up pg_config for psycopg2
 
-`psycopg2` (the real PostgreSQL adapter, **not** `psycopg2-binary`) must be compiled from C source. This requires `pg_config` and the PostgreSQL development headers, which are **not** installed system-wide on BWRC servers. We extract them locally from the `libpq-devel` RPM — no root access needed.
+`psycopg2` (the real PostgreSQL adapter, **not** `psycopg2-binary`) must be compiled from C source. This requires `pg_config` and the PostgreSQL development headers, which are **not** installed system-wide on BWRC servers. We extract them locally from the `libpq-devel` RPM (no root access needed).
 
 ```bash
 # Create a temp directory and download the RPMs explicitly. We do NOT
@@ -214,7 +218,7 @@ pg_config --libdir
 # Should show: /bwrcq/home/<username>/pg_local/usr/lib64
 ```
 
-**Make pg_config persistent** — add to `~/.bashrc`:
+**Make pg_config persistent** (add to `~/.bashrc`):
 
 ```bash
 echo 'export PATH="$HOME/pg_local/usr/bin:$PATH"' >> ~/.bashrc
@@ -224,6 +228,8 @@ source ~/.bashrc
 Now `uv` (and pip) can build `psycopg2` from source whenever needed.
 
 ### Step 2: Create Virtual Environment and Install Dependencies
+
+> **Today**: skip the conversion. This repo's `pyproject.toml` is already PEP 621 and also defines the `sledgehammer` and `studio` commands, which the block below lacks, so do not replace it. `psycopg2` and `asyncpg` are no longer base dependencies, so the two import checks below fail after a bare `uv sync`. `./scripts/uv_setup.sh` installs both.
 
 First, you need to convert the `pyproject.toml` from Poetry format to standard PEP 621 format. Replace the contents of `pyproject.toml` with:
 
@@ -327,7 +333,7 @@ typeCheckingMode = "standard"
 - `[tool.poetry.dev-dependencies]` → `[dependency-groups]` dev
 - Build backend: `poetry-core` → `hatchling`
 
-**Important**: Make sure you completed [Step 1.5](#step-15-set-up-pg_config-for-psycopg2) first — `pg_config` must be on your `PATH` so `psycopg2` can compile from source.
+**Important**: Make sure you completed [Step 1.5](#step-15-set-up-pg_config-for-psycopg2) first: `pg_config` must be on your `PATH` so `psycopg2` can compile from source.
 
 Now create the venv and install:
 
@@ -390,6 +396,8 @@ python3 -c "import psycopg2; print('psycopg2:', psycopg2.__version__)"
 # Should show: psycopg2: 2.9.11 (dt dec pq3 ext lo64)
 ```
 
+> **Today**: `./scripts/uv_setup.sh` also installs `asyncpg`, the FAB provider (the tracked `airflow.cfg` uses its auth manager for the LDAP login), the edge3 provider and `python-ldap`, so the packages above are no longer enough on their own.
+
 ### Step 4: Set Up PostgreSQL Connection
 
 #### 4.1 Get PostgreSQL Password
@@ -425,6 +433,8 @@ sql_alchemy_engine_args = {"pool_pre_ping": true}
 
 Replace `<username>` with your LDAP username and `YOUR_PASSWORD` with your actual PostgreSQL password.
 
+> **Today**: `airflow.cfg` is tracked in git and ships with `sql_alchemy_conn` blank, so do not put your password in it. `./scripts/uv_setup.sh` (or `./scripts/sledge-secrets-create.sh`) stores the connection string in a GPG-encrypted file under `.sledgehammer/`. Run the check below as `sledgehammer db check`, which loads it first. See [SECRETS.md](SECRETS.md).
+
 #### 4.4 Test Connection
 
 ```bash
@@ -442,8 +452,9 @@ executor = LocalExecutor
 parallelism = 30
 max_active_tasks_per_dag = 30
 load_examples = False    # off by default so Airflow's built-in example DAGs don't clutter the list
-# dags_folder is optional: the launcher auto-points it at this checkout's dags/
-# folder. Add a line here only to send Airflow to a different directory.
+# dags_folder is optional: the launcher pins AIRFLOW_HOME, so Airflow reads this
+# checkout's dags/ folder. Set it only to use another directory; the build and
+# sledgehammer follow it.
 
 [api]
 # Uncomment and set base_url (required for task execution in Airflow 3.x)
@@ -454,6 +465,8 @@ task_queued_timeout = 1200.0
 job_heartbeat_sec = 10
 scheduler_heartbeat_sec = 10
 ```
+
+> **Today**: the tracked `airflow.cfg` already has these settings, except that `[api]` serves on port 8081 (`base_url = http://localhost:8081`) and `[scheduler] job_heartbeat_sec` is 5. The `dags/` folder is in the repo too, so there is nothing to edit or create here.
 
 Create the DAGs folder:
 
@@ -471,10 +484,10 @@ airflow config get-value core dags_folder
 
 > **Defaults the launcher handles for you**
 >
-> - **DAGs folder** — you don't need to set `dags_folder` by hand. `scripts/airflow-standalone-ldap.py` derives it from the checkout location and exports `AIRFLOW__CORE__DAGS_FOLDER=<repo>/dags` at launch, so the DAGs are found no matter where you start it from. Setting `dags_folder` in `airflow.cfg` (or exporting `AIRFLOW__CORE__DAGS_FOLDER` yourself) still wins. Airflow's own default is `$AIRFLOW_HOME/dags`, which quietly misses your DAGs whenever `AIRFLOW_HOME` isn't the checkout root — that's why the launcher pins it.
-> - **Example DAGs** — `load_examples = False` ships in `airflow.cfg`, so Airflow's built-in example DAGs stay out of the list. Flip it back to `True` if you want them.
+> - **DAGs folder**: you don't need to set `dags_folder` by hand. `scripts/airflow-standalone-ldap.py` pins `AIRFLOW_HOME` to the checkout at launch, so Airflow's own default, `$AIRFLOW_HOME/dags`, is the checkout's `dags/` folder no matter where you start it from, and the build links each generated DAG into that same folder. To use another folder, set `dags_folder` in `airflow.cfg`, or export `AIRFLOW__CORE__DAGS_FOLDER` in the shell you launch and build from; nothing else is needed. The build's linker, `sledgehammer run` and `studio make-dag` look the folder up the way Airflow does: `$AIRFLOW__CORE__DAGS_FOLDER`, then `[core] dags_folder` in `$AIRFLOW_CONFIG` or `$AIRFLOW_HOME/airflow.cfg`, then `$AIRFLOW_HOME/dags`, where `AIRFLOW_HOME` defaults to the checkout. They check `HAMMER_DAGS_FOLDER` before all three, and Airflow never reads it, so leave it unset unless it names the same folder. Even with it unset, your DAGs go missing when the build and the running stack see different `AIRFLOW_HOME`, `AIRFLOW_CONFIG` or `AIRFLOW__CORE__DAGS_FOLDER` values.
+> - **Example DAGs**: `load_examples = False` ships in `airflow.cfg`, so Airflow's built-in example DAGs stay out of the list. Flip it back to `True` if you want them.
 >
-> Both apply only when you launch through `scripts/airflow-standalone-ldap.py`. A bare `airflow` command doesn't load the launcher's defaults (and doesn't decrypt your secrets either).
+> Both need `AIRFLOW_HOME` to be the checkout. `sledgehammer` runs `scripts/airflow-standalone-ldap.py`, which pins it there and decrypts your secrets. Run any other `airflow` command through `sledgehammer` (for example `sledgehammer config get-value core dags_folder`): it pins `AIRFLOW_HOME` to the checkout, reads your [stack env file](CLI_REFERENCE.md#the-environment-file) if you have one, then decrypts your secrets. A bare `airflow` command gets that `AIRFLOW_HOME` and your secrets only after `source venv.sh` from the checkout root.
 
 ### Step 6: Initialize Database
 
@@ -491,6 +504,8 @@ airflow db check
 airflow db check-migrations
 ```
 
+> **Today**: the first `sledgehammer` launch runs the migrations for you. To run them by hand, use `sledgehammer db migrate`, which loads your secrets first.
+
 ### Step 7: Start Airflow
 
 #### Option A: Standalone (Recommended)
@@ -503,13 +518,15 @@ export AIRFLOW_HOME=$(pwd)
 airflow standalone
 ```
 
+> **Today**: run `sledgehammer` instead, from any directory (`./scripts/uv_setup.sh` puts it on your `PATH`). It sources `venv.sh` in the checkout, decrypts your secrets and starts the stack with the EECS LDAP login and a TOTP second factor, so there is no generated admin password: you log in with your LDAP credentials and an authenticator code. When the stack is ready it prints the web UI URL and an SSH tunnel command. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
+
 Wait for `Airflow is ready`. The auto-generated admin password is in `simple_auth_manager_passwords.json.generated`.
 
 **Note**: In Airflow 3.x, the `airflow users create` CLI command has been removed. `airflow standalone` creates the admin user automatically.
 
 #### Option B: Separate Processes
 
-**Terminal 1 - Scheduler:**
+**Terminal 1 (Scheduler):**
 ```bash
 cd /bwrcq/C/<username>/hammer
 source .venv/bin/activate
@@ -517,7 +534,7 @@ export AIRFLOW_HOME=$(pwd)
 airflow scheduler
 ```
 
-**Terminal 2 - API Server:**
+**Terminal 2 (API Server):**
 ```bash
 cd /bwrcq/C/<username>/hammer
 source .venv/bin/activate
@@ -525,7 +542,7 @@ export AIRFLOW_HOME=$(pwd)
 airflow api-server --port 8080
 ```
 
-**Note**: In Airflow 3.x, the web UI is served by `airflow api-server`, not `airflow webserver`.
+**Note**: In Airflow 3.x, the web UI is served by `airflow api-server`, not `airflow webserver`. Airflow 3 also needs `airflow dag-processor` (it parses the DAG files) and `airflow triggerer`, each in its own terminal like the two above. `airflow standalone` starts all four.
 
 #### Access the UI
 
@@ -539,6 +556,8 @@ airflow api-server --port 8080
 ssh -A -L 8080:localhost:8080 -J <username>@bwrcrdsl-1.eecs.berkeley.edu <username>@<compute_node>.eecs.berkeley.edu
 ```
 Then open http://localhost:8080 in your browser.
+
+> **Today**: `sledgehammer` serves on the `[api] port` from `airflow.cfg` (8081 in the tracked file), or the next free port if that one is busy, and prints the URL and the tunnel command to use. You log in with your LDAP credentials and an authenticator code, not as `admin`.
 
 ---
 
@@ -565,6 +584,8 @@ Add `chipyard/` to `.gitignore` (it's a separate git repository):
 echo "chipyard/" >> .gitignore
 ```
 
+> **Today**: the tracked `.gitignore` already lists `chipyard/`, so skip the `echo`.
+
 ### Step 9: Chipyard Build Setup (Optional)
 
 > **Note**: Chipyard's `build-setup.sh` initializes submodules, builds the RISC-V toolchain, and sets up the conda environment. This takes **30+ minutes** and requires **15GB+ disk space**. It is **only needed for chipyard-based designs** (e.g., RocketTile). The GCD demo uses Hammer's built-in `e2e/` test configs and does **not** require a built chipyard.
@@ -581,40 +602,28 @@ source /tools/C/ee290-sp25/bwrc-env.sh
 ./build-setup.sh riscv-tools -s 6 -s 7 -s 8 -s 9
 ```
 
-For just the GCD demo and Sledgehammer DAGs, **skip this step** — the chipyard clone is sufficient.
+For just the GCD demo and Sledgehammer DAGs, **skip this step**. The chipyard clone is sufficient.
 
 ### Step 10: Modify Hammer Files for Airflow Compatibility
 
-Several Hammer source files need modification to work correctly within Airflow. These changes are **required** — without them, tasks will crash the Airflow worker process or fail to execute.
+Several Hammer source files need modification to work correctly within Airflow. These changes are **required**: without them, tasks will crash the Airflow worker process or fail to execute.
 
-#### 10.1 Remove `sys.exit()` from `cli_driver.py`
+> **Today**: skip this step; the repo needs none of these edits. `hammer_vlsi.py` no longer holds the DAGs (see 10.2). Genus sets a QRC tech file only when the PDK lists one, and Sky130 lists none. Generated DAGs run each step from the directory you ran the build in, so the relative paths in `common.yml` and `sim-rtl.yml` work. `syn.yml` and `par.yml` are already in the repo.
 
-**File**: `hammer/vlsi/cli_driver.py` (at the bottom of the file)
+#### 10.1 Leave `sys.exit()` in `cli_driver.py`
 
-**Problem**: `CLIDriver.main()` calls `sys.exit()` at the end of execution. This terminates the entire Python process, which in Airflow's case is the worker — causing the task to be marked as `failed` even if the VLSI step succeeded.
-
-**Fix**: Replace the last two lines:
-
-```python
-# Change from:
-#     sys.exit(1)
-# To:
-      return 1
-
-# Change from:
-#     sys.exit(self.run_main_parsed(vars(parser.parse_args(args))))
-# To:
-      return self.run_main_parsed(vars(parser.parse_args(args)))
-```
+Do not change the `sys.exit()` calls at the end of `CLIDriver.main()`. They give a failed stage a nonzero exit code, which make and the Airflow tasks rely on to stop the flow. Each DAG task runs its action in a separate process, so the exit cannot take down the Airflow worker.
 
 #### 10.2 Replace `hammer_vlsi.py` with DAG definitions
+
+> **Today**: skip this step. `hammer/shell/hammer_vlsi.py` is the `hammer-vlsi` entry point again, plus `run_cli_driver()`, the libnsl block and the helpers that generated DAGs import. The two demo DAGs moved to `hammer/shell/airflow_example_dags.py`, and nothing imports them. You generate a design's DAG with `sledgehammer buildfile`, run from the vlsi directory (or `e2e/`). It runs the build action through `make buildfile` (`make build` in `e2e/`, which has no `buildfile` rule), and with `vlsi.core.build_system: sledgehammer` that action writes `hammer_dag.py` into the design's `OBJ_DIR`; `_link_dag_into_dags_folder` in `hammer/vlsi/hammer_build_systems.py` then links it into the dags folder as `sledgehammer_<design>_<user>.py`. `<design>` is the `OBJ_DIR` basename, so two builds that share it (for example `build-sky130-cm/gcd` and `build-asap7-cm/gcd`) share one DAG, and the linker prints a NOTE when it replaces the other build's link.
 
 **File**: `hammer/shell/hammer_vlsi.py`
 
 The stock `hammer_vlsi.py` is a 9-line script that just calls `CLIDriver().main()`. Replace it entirely with the Sledgehammer DAG definitions that define the `Sledgehammer_demo_gcd` and `Sledgehammer_demo_rocket` DAGs.
 
 The modified file includes:
-- **`LD_LIBRARY_PATH` setup**: Module-level code that adds `~/libnsl_local/usr/lib64` to `LD_LIBRARY_PATH` so Cadence tools can find `libnsl.so.1`. This **must** be in the DAG file — Airflow worker subprocesses don't inherit the parent shell's environment.
+- **`LD_LIBRARY_PATH` setup**: Module-level code that adds `~/libnsl_local/usr/lib64` to `LD_LIBRARY_PATH` so Cadence tools can find `libnsl.so.1`. This **must** be in the DAG file: Airflow worker subprocesses don't inherit the parent shell's environment.
 - **`run_cli_driver()` wrapper**: Catches `SystemExit` from `CLIDriver().main()` to prevent killing the Airflow worker
 - **`get_param()` helper**: Reads DAG parameters from `conf` (runtime) or `params` (defaults), fixing the issue where triggering without config skips all tasks
 - **`AIRFlow` class**: GCD demo configuration with absolute paths to `e2e/` configs
@@ -640,10 +649,10 @@ self.specs_abs = '/bwrcq/C/<username>/hammer/specs' # ← your path
 
 **Problem**: The QRC tech file setting can cause Genus to fail if QRC files are not available for the PDK (Sky130 has no QRC). Commenting it out prevents failures during synthesis.
 
-**Fix**: Comment out lines ~231–233:
+**Fix**: Comment out lines ~231 to 233:
 
 ```python
-# Commented out QRC tech file setting - may cause issues if QRC is needed in the future
+# Commented out QRC tech file setting: may cause issues if QRC is needed in the future
 # if len(qrc_files) > 0:
 #     verbose_append("set_db qrc_tech_file {{ {files} }}".format(
 #         files=qrc_files[0]
@@ -717,7 +726,7 @@ technology.sky130:
 # PAR input is dynamically generated by syn_to_par() from synthesis outputs.
 ```
 
-### Step 11: Install libnsl Locally (RHEL 9 — Required for Cadence Tools)
+### Step 11: Install libnsl Locally (RHEL 9, Required for Cadence Tools)
 
 RHEL 9 removed `libnsl.so.1`, which Cadence tools (Genus, Innovus) depend on. Without it, synthesis and PAR fail with `genus: error while loading shared libraries: libnsl.so.1`.
 
@@ -736,7 +745,7 @@ cd ~
 rm -rf /tmp/libnsl_build
 ```
 
-> **IMPORTANT**: Do **NOT** copy Sky130 PDK files (`__init__.py`, `sram-cache.json`, `sram_compiler/__init__.py`) from other reference setups. They may be from a different Hammer version with incompatible APIs (e.g., importing `TechConfig` which doesn't exist in stock Hammer), causing `ImportError` at runtime. The stock Sky130 files work as-is for the GCD demo.
+> **IMPORTANT**: Do **NOT** copy Sky130 PDK files (`__init__.py`, `sram-cache.json`, `sram_compiler/__init__.py`) from other reference setups. They may be from a different Hammer version with incompatible APIs, causing `ImportError` at runtime. The repo's own Sky130 files work as-is for the GCD demo. Since the sky130 port (September 2026) they are no longer the stock files, but they still come with the repo, so keep them.
 
 ### Step 12: Update Airflow Configuration for DAGs
 
@@ -748,6 +757,8 @@ Now that the DAGs are in `hammer/shell/hammer_vlsi.py`, update `airflow.cfg`:
 [core]
 dags_folder = /bwrcq/C/<username>/hammer/hammer/shell
 ```
+
+> **Today**: skip this and leave `dags_folder` unset. The build looks the dags folder up the way Airflow does and links each generated DAG there. With `dags_folder` unset, that is Airflow's default, `$AIRFLOW_HOME/dags`, which is the checkout's `dags/` folder because `sledgehammer` runs Airflow with the checkout as `AIRFLOW_HOME`. If you do set `dags_folder` (or export `AIRFLOW__CORE__DAGS_FOLDER`), the build and `sledgehammer` follow it without `HAMMER_DAGS_FOLDER`. See the note in [Step 5](#step-5-configure-airflow).
 
 #### 12.2 Add Security Keys (CRITICAL for Airflow 3.x)
 
@@ -782,6 +793,8 @@ jwt_secret = <your_generated_jwt_secret>
 
 > **CRITICAL**: `internal_api_secret_key` and `secret_key` **must be the same value**. If they don't match, tasks will crash immediately with signature verification errors.
 
+> **Today**: these keys go in the GPG-encrypted secrets file too, not in the tracked `airflow.cfg` (see the note in [Step 4.3](#43-update-airflowcfg)).
+
 #### 12.3 Run DB Migrate
 
 ```bash
@@ -808,9 +821,13 @@ airflow dags list-import-errors
 # Should show: No data found
 ```
 
+> **Today**: the demo DAGs are not loaded (see [Step 10.2](#102-replace-hammer_vlsipy-with-dag-definitions)), so this `grep` finds nothing. Look for your own design's DAG instead: `sledgehammer dags list | grep sledgehammer_`.
+
 ---
 
 ## Available DAGs
+
+> **Today**: these two demo DAGs sit in `hammer/shell/airflow_example_dags.py` and are not loaded (see [Step 10.2](#102-replace-hammer_vlsipy-with-dag-definitions)). Each design gets its own `sledgehammer_<design>_<user>` DAG, which you generate with `sledgehammer buildfile` from the design's vlsi directory and run with `sledgehammer <stage>`; see [CLI_REFERENCE.md](CLI_REFERENCE.md).
 
 ### Sledgehammer_demo_gcd
 
@@ -839,7 +856,7 @@ RocketTile design workflow (includes SRAM generation step).
 | `syn` | boolean | `True` | Run logic synthesis |
 | `par` | boolean | `True` | Run place and route |
 
-**Default config**: design=`example`, PDK=`sky130`, tools=`cm`, env=`example` — override with the `design`/`pdk`/`tools`/`env` environment variables, set to your site's names
+**Default config**: design=`example`, PDK=`sky130`, tools=`cm`, env=`example`. Override with the `design`/`pdk`/`tools`/`env` environment variables, set to your site's names
 
 ### DAG Task Flow
 
@@ -861,24 +878,26 @@ The `sim_or_syn_decide` branch checks `sim_rtl` **first**. If `sim_rtl=True`, it
 
 ## Usage
 
+> **Today**: these commands target the demo DAGs. Run your own design's DAG with `sledgehammer <stage>` or `sledgehammer run <stages> -t <design>`, and check it with `sledgehammer status --design <design>`. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
+
 ### Triggering DAGs via CLI
 
 ```bash
 source venv.sh
 
-# GCD - Full default flow (build + sim_rtl)
+# GCD: Full default flow (build + sim_rtl)
 airflow dags trigger Sledgehammer_demo_gcd
 
-# GCD - Build + Synthesis + PAR (skip sim)
+# GCD: Build + Synthesis + PAR (skip sim)
 airflow dags trigger Sledgehammer_demo_gcd --conf '{"sim_rtl": false}'
 
-# GCD - Build only
+# GCD: Build only
 airflow dags trigger Sledgehammer_demo_gcd --conf '{"sim_rtl": false, "syn": false, "par": false}'
 
-# GCD - Full flow with clean
+# GCD: Full flow with clean
 airflow dags trigger Sledgehammer_demo_gcd --conf '{"clean": true}'
 
-# Rocket - Build + SRAM + Synthesis
+# Rocket: Build + SRAM + Synthesis
 airflow dags trigger Sledgehammer_demo_rocket --conf '{"sim_rtl": false}'
 ```
 
@@ -918,9 +937,13 @@ source venv.sh    # activates venv + sets AIRFLOW_HOME + sources BWRC env
 airflow standalone
 ```
 
+> **Today**: the quick start is just `sledgehammer`, from any directory. It sources `venv.sh` in the checkout for you (see [Step 7](#step-7-start-airflow)).
+
 ### Convenience Script: `venv.sh`
 
 Create this file in the hammer root:
+
+> **Today**: `venv.sh` ships with the repo and does more than the version below (it also loads your encrypted secrets and strips conda library paths), so do not overwrite it.
 
 ```bash
 source ./.venv/bin/activate
@@ -964,6 +987,8 @@ airflow standalone
 
 # Check password in: simple_auth_manager_passwords.json.generated
 ```
+
+> **Today**: run `sledgehammer` instead of all three steps, and log in with your LDAP credentials and an authenticator code (see [Step 7](#step-7-start-airflow)).
 
 ---
 
@@ -1095,7 +1120,7 @@ python3 -c "import psycopg2; print('psycopg2:', psycopg2.__version__)"
 
 **Error**: `cannot find -lpq` or `libpq.so: cannot open shared object file`
 
-You ran an older version of Step 1.5 that used `dnf download --resolve libpq-devel`. On BWRC the system already has `libpq` installed, so `--resolve` skipped downloading it, leaving `~/pg_local/usr/lib64/libpq.so` as a dangling symlink. Re-run Step 1.5 (current version) — it explicitly downloads both `libpq-devel` and `libpq` so the local copy is complete:
+You ran an older version of Step 1.5 that used `dnf download --resolve libpq-devel`. On BWRC the system already has `libpq` installed, so `--resolve` skipped downloading it, leaving `~/pg_local/usr/lib64/libpq.so` as a dangling symlink. Re-run Step 1.5 (current version). It explicitly downloads both `libpq-devel` and `libpq` so the local copy is complete:
 
 ```bash
 rm -rf ~/pg_local
@@ -1116,13 +1141,13 @@ rm -rf ~/pg_local
 
 ### Authentication Failed
 
-1. Verify username and password in `airflow.cfg` connection string
+1. Verify username and password in `airflow.cfg` connection string (today it lives in your encrypted secrets file; see [SECRETS.md](SECRETS.md))
 2. Check for extra spaces when copying password
 3. Contact sysadmins if password doesn't work
 
 ### Tasks Not Starting / Network Unreachable
 
-Ensure `base_url` is set in `[api]` section of `airflow.cfg`:
+Ensure `base_url` is set in `[api]` section of `airflow.cfg` (today `sledgehammer` sets it to the port it serves on):
 ```ini
 [api]
 base_url = http://localhost:8080
@@ -1137,6 +1162,8 @@ lsof -i :8080
 airflow api-server --port 8090
 # Then update airflow.cfg: base_url = http://localhost:8090
 ```
+
+> **Today**: `sledgehammer` moves to the next free port by itself and sets `base_url` to match. Set `SLEDGE_PORT=<port>` to pin one; the launch then stops if that port is taken.
 
 ### Migrations Pending
 
@@ -1173,7 +1200,7 @@ hammer-shell-test
 
 ### `syn`, `par` tasks are skipped even though they're set to True
 
-**This is expected.** The `sim_or_syn_decide` branch treats `sim_rtl` and `syn/par` as **mutually exclusive**. To run syn/par:
+**This is expected** in the March demo DAGs. The `sim_or_syn_decide` branch treats `sim_rtl` and `syn/par` as **mutually exclusive** (a generated DAG has no such branch and runs every stage you select). To run syn/par:
 
 ```bash
 airflow dags trigger Sledgehammer_demo_gcd --conf '{"sim_rtl": false}'
@@ -1183,21 +1210,23 @@ airflow dags trigger Sledgehammer_demo_gcd --conf '{"sim_rtl": false}'
 
 **Cause**: RHEL 9 removed `libnsl.so.1`. Cadence Genus and Innovus depend on it.
 
-**Fix**: Install `libnsl.so.1` locally (see [Step 11](#step-11-install-libnsl-locally-rhel-9--required-for-cadence-tools)) AND ensure `LD_LIBRARY_PATH` is set in `hammer_vlsi.py` (see [Step 10.2](#102-replace-hammer_vlsipy-with-dag-definitions)).
+**Fix**: Install `libnsl.so.1` locally (see [Step 11](#step-11-install-libnsl-locally-rhel-9-required-for-cadence-tools)) AND ensure `LD_LIBRARY_PATH` is set in `hammer_vlsi.py` (see [Step 10.2](#102-replace-hammer_vlsipy-with-dag-definitions)).
 
-Setting `LD_LIBRARY_PATH` only in `venv.sh` is **not enough** — Airflow worker subprocesses don't inherit it. The path must also be set in the DAG file itself.
+Setting `LD_LIBRARY_PATH` only in `venv.sh` is **not enough**: Airflow worker subprocesses don't inherit it. The path must also be set in the DAG file itself.
+
+> **Today**: `sledgehammer` sources `venv.sh` before it starts the stack, and each task copies that environment, so the `venv.sh` setting does reach the tools. The block in `hammer_vlsi.py` is in the repo as well.
 
 ### DAGs not appearing
 
 1. Check import errors: `airflow dags list-import-errors`
-2. Verify `dags_folder` in `airflow.cfg` points to `hammer/shell/`
-3. Test import manually: `python3 hammer/shell/hammer_vlsi.py`
+2. Verify that the folder Airflow reads holds the `<link>` from the `Linked DAG into dags folder: <link> -> <dag_file>` line the build printed. `sledgehammer config get-value core dags_folder` prints the folder Airflow reads, with `AIRFLOW_HOME` pinned to the checkout as the launch pins it. By default it is the checkout's `dags/` folder (in March it pointed to `hammer/shell/`). If `HAMMER_DAGS_FOLDER` is set, it must be that same path, since it overrides where the build links.
+3. Test import manually: `python3 <link>`, using the `<link>` path from that line
 4. Verify hammer is importable: `python3 -c "from hammer.vlsi import CLIDriver"`
 5. Run `airflow dags reserialize` to force a re-scan
 
 ### `airflow db init` doesn't work
 
-Airflow 3.x removed `db init`. Use `airflow db migrate` instead — it's idempotent and safe to run any number of times.
+Airflow 3.x removed `db init`. Use `airflow db migrate` instead. It's idempotent and safe to run any number of times.
 
 ### Want to Reset Everything
 
@@ -1211,6 +1240,8 @@ uv sync --group dev
 # Then re-do Steps 3-7 and Part 2
 ```
 
+> **Today**: `uv.lock` and `airflow.cfg` are tracked in git, so leave them out of the `rm`. After removing `.venv`, rerun `./scripts/uv_setup.sh` instead of the remaining commands.
+
 ---
 
 ## All Modifications Summary
@@ -1220,14 +1251,13 @@ uv sync --group dev
 | File | Change | Why |
 |------|--------|-----|
 | `pyproject.toml` | Converted from Poetry to PEP 621 for uv | uv compatibility |
-| `hammer/vlsi/cli_driver.py` | `sys.exit(1)` → `return 1`; `sys.exit(self.run_main_parsed(...))` → `return self.run_main_parsed(...)` | Prevent `sys.exit()` from killing Airflow workers |
-| `hammer/shell/hammer_vlsi.py` | Replaced with ~1090-line Sledgehammer DAG definitions including `LD_LIBRARY_PATH` setup | Airflow DAG file with libnsl workaround, `run_cli_driver()` wrapper, two DAG definitions |
-| `hammer/synthesis/genus/__init__.py` | Commented out QRC tech file lines ~231-233 | Sky130 has no QRC; prevents Genus errors |
-| `e2e/configs-design/gcd/common.yml` | Relative paths → absolute paths | Airflow workers don't run from e2e/ |
-| `e2e/configs-design/gcd/sim-rtl.yml` | Relative paths → absolute paths | Airflow workers don't run from e2e/ |
-| `airflow.cfg` | dags_folder, security keys, PostgreSQL connection | Airflow configuration |
-| `.gitignore` | Added chipyard/, airflow.cfg, logs/, wheels/ | Git cleanliness |
-| `venv.sh` | Created convenience script with libnsl `LD_LIBRARY_PATH` | Easy environment activation |
+| `hammer/shell/hammer_vlsi.py` | Replaced with ~1090-line Sledgehammer DAG definitions including `LD_LIBRARY_PATH` setup (today it holds no DAGs; see Step 10.2) | Airflow DAG file with libnsl workaround, `run_cli_driver()` wrapper, two DAG definitions |
+| `hammer/synthesis/genus/__init__.py` | Commented out QRC tech file lines ~231-233 (today left active; see Step 10) | Sky130 has no QRC; prevents Genus errors |
+| `e2e/configs-design/gcd/common.yml` | Relative paths → absolute paths (today relative again; see Step 10) | Airflow workers don't run from e2e/ |
+| `e2e/configs-design/gcd/sim-rtl.yml` | Relative paths → absolute paths (today relative again; see Step 10) | Airflow workers don't run from e2e/ |
+| `airflow.cfg` | dags_folder, security keys, PostgreSQL connection (today tracked in git, with no `dags_folder` and the secret fields blank) | Airflow configuration |
+| `.gitignore` | Added chipyard/, airflow.cfg, logs/, wheels/ (today `airflow.cfg` is tracked, not ignored) | Git cleanliness |
+| `venv.sh` | Created convenience script with libnsl `LD_LIBRARY_PATH` (today it ships with the repo) | Easy environment activation |
 
 ### Files Created (not in stock Hammer)
 
@@ -1236,19 +1266,19 @@ uv sync --group dev
 | `e2e/configs-design/gcd/syn.yml` | Synthesis constraints: clock period (20ns), input delays, QRC disabled |
 | `e2e/configs-design/gcd/par.yml` | PAR config placeholder |
 
-### Files NOT Modified (left as-is from stock Hammer)
+### Sky130 Files (do NOT replace)
 
 | File | Note |
 |------|------|
-| `hammer/technology/sky130/__init__.py` | Stock Sky130 PDK — do NOT replace with copies from other setups |
-| `hammer/technology/sky130/sram-cache.json` | Stock SRAM cache — do NOT replace |
-| `hammer/technology/sky130/sram_compiler/__init__.py` | Stock SRAM compiler — do NOT replace |
+| `hammer/technology/sky130/__init__.py` | Sky130 PDK plugin, changed by the sky130 port (September 2026): do NOT replace with copies from other setups |
+| `hammer/technology/sky130/sram-cache.json` | SRAM cache, changed by the sky130 port: do NOT replace |
+| `hammer/technology/sky130/sram_compiler/__init__.py` | SRAM compiler, changed by the sky130 port: do NOT replace |
 
 ### External Dependencies Installed (not in the repo)
 
 | Item | Location | Purpose |
 |------|----------|---------|
-| `libnsl.so.1` | `~/libnsl_local/usr/lib64/` | RHEL 9 workaround — Cadence tools need this library. Extracted from RPM. |
+| `libnsl.so.1` | `~/libnsl_local/usr/lib64/` | RHEL 9 workaround: Cadence tools need this library. Extracted from RPM. |
 
 ---
 
@@ -1262,28 +1292,29 @@ hammer/                               # AIRFLOW_HOME
 ├── .venv/                            # Virtual environment
 ├── venv.sh                           # Convenience activation script
 ├── chipyard/                         # Chipyard repository (cloned in Step 8)
+├── dags/                             # Links to generated DAGs (today)
 ├── logs/                             # Airflow task logs
-├── simple_auth_manager_passwords...  # Auto-generated admin password
+├── simple_auth_manager_passwords...  # Auto-generated admin password (none with today's LDAP login)
 ├── hammer/                           # Hammer Python package
 │   ├── shell/
-│   │   └── hammer_vlsi.py            # ★ DAG definitions (Sledgehammer_demo_gcd, _rocket)
+│   │   └── hammer_vlsi.py            # ★ hammer-vlsi entry point, helpers for generated DAGs
 │   ├── vlsi/
-│   │   └── cli_driver.py             # ★ CLIDriver (modified: sys.exit → return)
+│   │   └── cli_driver.py             # ★ CLIDriver
 │   ├── synthesis/
 │   │   └── genus/
-│   │       └── __init__.py           # ★ Genus plugin (modified: QRC workaround)
+│   │       └── __init__.py           # ★ Genus plugin
 │   └── technology/
-│       └── sky130/                   # Stock Sky130 PDK (do NOT replace)
+│       └── sky130/                   # Sky130 PDK, from the sky130 port (do NOT replace)
 └── e2e/                              # End-to-end configs
     ├── configs-env/                  # Environment configs (bwrc-env.yml)
     ├── configs-pdk/                  # PDK configs (sky130.yml)
     ├── configs-tool/                 # Tool configs (cm.yml)
     ├── configs-design/               # Design configs
     │   └── gcd/
-    │       ├── common.yml            # ★ Design config (absolute paths)
-    │       ├── sim-rtl.yml           # ★ Simulation config (absolute paths)
-    │       ├── syn.yml               # ★ Synthesis config (CREATED — not in stock)
-    │       ├── par.yml               # ★ PAR config (CREATED — not in stock)
+    │       ├── common.yml            # Design config (relative paths today)
+    │       ├── sim-rtl.yml           # ★ Simulation config (relative paths today)
+    │       ├── syn.yml               # ★ Synthesis config (CREATED, not in stock)
+    │       ├── par.yml               # ★ PAR config (CREATED, not in stock)
     │       └── sky130.yml            # PDK-specific design config
     └── src/
         ├── gcd.v                     # GCD design source
@@ -1297,13 +1328,13 @@ Files marked with ★ were modified from the stock Hammer repository.
 ## Best Practices
 
 1. **All 4 security keys**: Always set `fernet_key`, `internal_api_secret_key`, `secret_key`, AND `jwt_secret`
-2. **Port consistency**: `[api] base_url` must match the actual port Airflow runs on
+2. **Port consistency**: `[api] base_url` must match the actual port Airflow runs on (today `sledgehammer` sets it for you)
 3. **Source BWRC env**: Always source the EDA tool environment before starting Airflow
 4. **Set AIRFLOW_HOME**: Every terminal that runs `airflow` commands must have `AIRFLOW_HOME` set
 5. **No `sys.exit()` in tasks**: Never use `sys.exit()` in Airflow task code
-6. **Use absolute paths in YAML configs**: Airflow workers don't run from the e2e directory
-7. **Understand `sim_rtl` vs `syn/par` exclusivity**: The DAG branches — you can run sim OR syn/par, not both
-8. **Use `airflow db migrate` freely**: It's idempotent — safe to run anytime
+6. **Use absolute paths in YAML configs**: Airflow workers don't run from the e2e directory (today not needed: generated DAGs run each step from the directory you ran the build in)
+7. **Understand `sim_rtl` vs `syn/par` exclusivity**: The DAG branches, so you can run sim OR syn/par, not both (demo DAGs only; a generated DAG runs every stage you select)
+8. **Use `airflow db migrate` freely**: It's idempotent, so it's safe to run anytime
 9. **Verify editable installs after moving repos**: Re-run `uv pip install -e .` if you move the directory
 
 ---

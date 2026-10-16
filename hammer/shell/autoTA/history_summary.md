@@ -1,9 +1,11 @@
 # Sledgehammer AutoTA Debugging History (2026-03-05)
 
-## Objective
-The primary goal was to fix the AI-driven self-healing pipeline where the Airflow DAG automatically runs `gemini.py` after a step (like `syn_debug`), generates a patch for errors, and branches the pipeline to retry.
+This page records the AutoTA debugging session of 2026-03-05. For how AutoTA works now, including its known issues, see [README.md](README.md).
 
-## the Journey & Iterations
+## Objective
+The primary goal was to fix the AI-driven self-healing pipeline where the Airflow DAG automatically runs `gemini.py` in a debug task after a stage (like `syn_debug` after `syn`), generates a patch for errors, and branches the pipeline to retry.
+
+## The Journey & Iterations
 
 ### Attempt 1: Git Diff + DAG Branching via TriggerDagRun
 **Approach:** 
@@ -37,24 +39,24 @@ END_PATCH
 **Why it succeeded:**
 1. LLMs excel at exact text regurgitation instead of calculating line-number differentials.
 2. We updated `patcher.py` to use a native Python `content.replace(find_text, replace_text, 1)`.
-3. We added a fallback fuzzy-matcher that ignores trailing whitespace and normalizes indentation just in case the AI messes up the spacing.
-4. All patched files are safely backed up to an `archive_dir/originals/` folder before they are touched.
-5. In-place modification allows Hammer to seamlessly pick up the updated configs in the next step.
+3. We added a fallback fuzzy-matcher that ignores trailing whitespace on each line just in case the AI messes up the spacing.
+4. Before a file is patched, it is copied to an `originals/` folder under `autota_patches/` in the build directory.
+5. Because files are edited in place, the next run of the flow reads the patched configs and sources.
 
 ### Reverting the DAG Architecture
 **Context:**
-During Attempt 1, we introduced `TriggerDagRunOperator` into `hammer_vlsi.py` to create recursive pipeline branches (`branch_20260305_syn`). 
+During Attempt 1, we introduced `TriggerDagRunOperator` into `hammer_vlsi.py` (the example DAGs now live in `hammer/shell/airflow_example_dags.py`) to create recursive pipeline branches (`branch_20260305_syn`).
 
 **Correction:**
 We realized this architectural drift deviated entirely from the upstream `juhyundo/hammer_dep (airflow_dev)` branch. The user requested we revert the DAG structure back to standard linear progression, but keep the `sim_rtl_debug`, `syn_debug`, and `par_debug` tasks.
 
 **Final DAG State:**
 We fetched the raw, original `airflow_dev` code and strategically re-injected the 3 `_debug` tasks without the branching logic.
-- Pipeline flows straight through: `sim_rtl >> sim_rtl_debug >> syn >> syn_debug >> par >> par_debug`.
-- If an error occurs, the debug task runs the Find-and-Replace patcher to update the code in-place, and the user can manually restart the DAG or next phase from Airflow as needed. No auto-spawned DAG clones.
+- Each `_debug` task runs once its stage finishes (`sim_rtl >> sim_rtl_debug`, `syn >> syn_debug`, `par >> par_debug`) and leads only to `exit_`, so later stages do not wait for it.
+- When the run conf sets both `debug` and the stage, the debug task runs `gemini.py`, and if the reply says `PATCH_AND_RETRY`, the Find-and-Replace patcher updates the code in place (`par_debug` runs only when `par` did not succeed). No run spawns a clone of itself: the separate `Sledgehammer_Meta_gcd` DAG starts a new run of `Sledgehammer_demo_gcd` after each trial that left a patch.
 
 ## Final Environment Fixes Implemented
-- Changing `subprocess.run` to call `sys.executable` ensures the script runs in the Airflow conda instance.
-- Removing `check=True` and setting `capture_output=True` guarantees both standard out and standard errors are piped to the Airflow logs UI.
-- Securely storing the API Key in an `autoTA/.api_key` file (with 600 permissions, tracked in `.gitignore`) resolved all bashrc fallback bugs.
+- Calling `sys.executable` in `subprocess.run` runs `gemini.py` under the Airflow task's own Python; if that Python cannot import `google.genai` or `yaml`, `gemini.py` re-runs itself in conda.
+- Running it with `check=False` and `capture_output=True`, then printing its stdout and stderr, puts both in the Airflow task log.
+- Storing the API key in `autoTA/.api_key` (mode `0600`, listed in `.gitignore`) lets `gemini.py` find it without sourcing `~/.bashrc`; it checks `$AUTOTA_API_KEY` first and `~/.bashrc` last.
 - `.gitignore` was aggressively updated to ignore PyCache, locally-bundled Conda versions, and API keys.

@@ -9,7 +9,9 @@ this if you need the SledgeHammer Airflow/Postgres flow.
 
 - Don't work under `/home`. Use your `/bwrcq` (or `/scratch`) area.
 - Always use the compute servers, not the login servers.
-- Source `env.sh` (and the venv, see below) before running anything, in every new shell.
+- Source `env.sh` before running anything, in every new shell. The `sledgehammer` commands
+  need no activated venv. Source the venv as well only for the course's `make` targets
+  (step 5).
 - Clean up your VLSI runs regularly so the shared disk doesn't fill up.
 
 ## The one big difference: two Python environments
@@ -26,7 +28,10 @@ uv venv. So you run **two separate Python environments that never merge**, layer
 They install independently (the uv setup needs nothing from conda), but the VLSI `make`
 flow needs both on PATH at once: conda for the tools, the venv so `python3` is hammer's.
 This works because Chipyard's build-time Python is stdlib glue. Only `ee290-vlsi` needs
-hammer, and it gets the venv.
+hammer, and it gets the venv. `sledgehammer buildfile` does this layering for you: run it
+with `env.sh` sourced and, for the `make` it runs, it puts the venv's `python3` first on
+PATH and drops conda entries from `LD_LIBRARY_PATH`, so you don't activate the venv
+yourself.
 
 ## Setup
 
@@ -59,10 +64,23 @@ the conda step when re-running.
 Clone the **SledgeHammer fork** into `vlsi/hammer` (not `ucb-bar/hammer`), then build its
 uv environment. Do **not** `pip install -e hammer` into conda.
 
+If `vlsi/hammer` already exists, run `git -C vlsi/hammer status --porcelain .` first. If it
+prints anything, stop: that is uncommitted work, so commit or save it. The steps below clone
+into `hammer.new` and move the old `hammer` aside instead of deleting it. For SSH, clone
+`git@github.com:juhyundo/hammer_dep.git` instead of the HTTPS URL.
+
+The check does not list gitignored files, such as your encrypted secrets in `.sledgehammer/`.
+To keep them, uncomment the `cp` line below, and `uv_setup.sh` skips its secrets prompt. A
+new set would get a new Fernet key, which cannot read what your Airflow DB already stored.
+Delete `hammer.old.<stamp>` yourself once you no longer need it.
+
 ```bash
 cd vlsi
-rm -rf hammer
-git clone <sledgehammer-fork> hammer     # e.g. depteam = git@github.com:juhyundo/hammer_dep.git
+git clone <sledgehammer-fork> hammer.new  # e.g. depteam = https://github.com/juhyundo/hammer_dep.git
+old=hammer.old.$(date +%s)
+[ -d hammer ] && mv hammer "$old"
+mv hammer.new hammer
+# cp -a "$old"/.sledgehammer hammer/      # keep your existing secrets
 cd hammer
 ./scripts/uv_setup.sh                     # run from the hammer repo root
 cd ../..
@@ -70,8 +88,8 @@ cd ../..
 
 `uv_setup.sh` installs uv, sets up the local libraries for the source builds (see the
 psycopg2 note), creates the uv venv at Python 3.11, installs hammer editable, then Airflow
-3.1.0 plus fab 3.6.3 plus python-ldap plus the real psycopg2, and prompts to create the
-encrypted Postgres secrets.
+3.1.0 plus fab 3.6.3 plus python-ldap plus the real psycopg2, links `sledgehammer` into
+`~/.local/bin`, and prompts to create the encrypted Postgres secrets.
 
 ### 4. techname plugin, into the uv venv (replaces the course's `pip install -e .`)
 
@@ -85,10 +103,13 @@ uv pip install -e vlsi/hammer-techname-plugin \
 ```
 
 `hammer` is a namespace package, so this makes `hammer.techname` importable under the venv
-with no PYTHONPATH. (Worth folding into `uv_setup.sh` so a venv rebuild keeps it.)
+with no PYTHONPATH. Re-running `uv_setup.sh` also reinstalls it: the script installs any
+populated `hammer-*-plugin` directory next to `vlsi/hammer`.
 
-### 5. Activate both environments to run
+### 5. Activate both environments for `make`
 
+You need this only for the course's `make` targets and `ee290-vlsi`, which run hammer
+directly. The `sledgehammer` commands (see [Daily use](#daily-use)) need no activated venv.
 Conda first, venv on top so `python3` is the hammer venv:
 
 ```bash
@@ -97,8 +118,14 @@ source vlsi/hammer/venv.sh     # uv venv: python3 = hammer 3.11, BWRC tools, sec
 which python3                  # sanity check: .../vlsi/hammer/.venv/bin/python3
 ```
 
-If `which python3` shows the conda Python, you sourced in the wrong order, so re-run
+`venv.sh` finds its checkout from its own path, so you can source it from any directory: it
+activates `vlsi/hammer/.venv` and sets `AIRFLOW_HOME` to `vlsi/hammer`. If `which python3`
+shows the conda Python, you sourced in the wrong order, so re-run
 `source vlsi/hammer/venv.sh` last.
+
+`venv.sh` also drops conda entries from `LD_LIBRARY_PATH` and prints the ones it removed,
+because conda's `libcrypto.so.3` breaks the system libldap that psycopg2 loads. Conda's
+tools stay on `PATH`.
 
 ### 6. Smoke tests (same as the course)
 
@@ -112,6 +139,10 @@ cd vlsi && make CONFIG=RocketConfig verilog
 # synthesis (needs the venv)
 make CONFIG=RocketConfig syn
 ```
+
+The two `vlsi` targets are the course's `make` flow, so they need both environments from
+step 5. Through SledgeHammer you register the DAG with `sledgehammer buildfile` and run syn
+with `sledgehammer syn` instead, with no venv to activate (see [Daily use](#daily-use)).
 
 PAR won't run on `RocketConfig` because the top-level IOs don't match. That's expected;
 it's a smoke test, not a tapeout config.
@@ -151,10 +182,11 @@ into `~/pg_local`, and puts `pg_config` on PATH. The same pattern provides `libn
 on RHEL 9) and `openldap-devel` (python-ldap). Let `uv_setup.sh` handle it. Don't fall back
 to `psycopg2-binary`, whose bundled libpq/libssl clashes with the system's.
 
-By-hand ordering, if you ever need it: get `pg_config` on PATH before `uv sync`; reinstall
-the real psycopg2 with `--no-binary --reinstall` after Airflow (Airflow's constraints pull
-in `psycopg2-binary`); and don't run `dnf download --resolve libpq-devel` (it skips libpq
-and leaves a dangling `libpq.so`, so the link fails with `cannot find -lpq`).
+By-hand ordering, if you ever need it: `uv sync` does not install psycopg2 and removes
+anything outside the lockfile, so build the real psycopg2 after `uv sync` and Airflow, with
+`pg_config` on PATH and `--no-binary psycopg2 --reinstall`. Don't run
+`dnf download --resolve libpq-devel` (it skips libpq and leaves a dangling `libpq.so`, so the
+link fails with `cannot find -lpq`).
 
 ## Don't merge the two Pythons
 
@@ -162,40 +194,66 @@ This is why we skip the course's pip-into-conda steps. Installing hammer into th
 would target Python 3.10 and bump conda's pydantic to satisfy hammer, which risks breaking
 other Chipyard tooling. Hammer and the plugin stay in the uv venv (3.11); conda only
 supplies the tool binaries. Running `ee290-vlsi` under conda's Python gives `No module named
-'hammer.vlsi'`, so the venv has to be active.
+'hammer.vlsi'`, so the venv has to be active when you run the `make` targets yourself.
+`sledgehammer buildfile` puts it first on PATH for you.
 
 ## Daily use
 
 ```bash
 cd <chipyard>
-source env.sh
-source vlsi/hammer/venv.sh    # GPG passphrase to load the DB secrets
+source env.sh                                     # conda toolchain for the make below
 cd vlsi
-# make CONFIG=EE290TapeoutConfig verilog / syn / par ; or trigger the Airflow DAG / sledgehammer
+sledgehammer buildfile CONFIG=EE290TapeoutConfig  # runs make buildfile, registers the DAG
+sledgehammer syn                                  # then sledgehammer par
 ```
 
-Re-source both in every new shell.
+`sledgehammer buildfile` passes `CONFIG=` and any other `VAR=val` arguments to make, then
+prints each registered DAG that comes from `vlsi/` and the command to run next.
+`sledgehammer syn` triggers the DAG on the running stack, so start the stack first with a
+bare `sledgehammer` in another shell (it stays in the foreground). Run from `vlsi/`, it
+finds the DAG generated there with no flags, and it loads the DB secrets itself, so it may
+ask for your GPG passphrase.
+
+Re-source `env.sh` in every new shell. For the course's `make` targets instead
+(`make CONFIG=EE290TapeoutConfig syn`), also source `vlsi/hammer/venv.sh` after it, as in
+step 5.
 
 ## Useful tips
 
-- `OBJ_DIR=<build_dir>` gives you separate build dirs under `vlsi/` (parallel runs).
+- Pass `OBJ_DIR=<build_dir>` to `sledgehammer buildfile` for separate build dirs under
+  `vlsi/` (parallel runs). Each build dir registers its own DAG, named after its basename,
+  so give them different basenames. Two build dirs with the same basename share one DAG,
+  only the one generated last is registered, and a run with `--obj_dir` set to the other one
+  refuses until you regenerate the DAG from it.
+- Once more than one DAG comes from `vlsi/` (a second `CONFIG` or `OBJ_DIR`), a bare
+  `sledgehammer syn` stops and asks for `-t <name>`. The name is the build dir's basename,
+  which `sledgehammer buildfile` prints as `registered sledgehammer_<name>_<user>`.
 - `LOADMEM=1` loads the simulation binary faster (with `EE290SimConfig`).
 
 ## Gotchas / troubleshooting
 
-- **`No module named 'hammer.vlsi'`**: venv not active, or conda's `python3` is shadowing.
-  Re-source `venv.sh` last and check `which python3`.
+- **`No module named 'hammer.vlsi'`** from a `make` target you ran yourself: venv not
+  active, or conda's `python3` is shadowing. Re-source `venv.sh` last and check
+  `which python3`.
 - **`No module named 'hammer.techname'`**: plugin not installed in the venv (step 4), or a
   rebuild dropped it. Re-run the step-4 `uv pip install -e`.
 - **syn hangs at "global incremental optimization"**: genus super-threading wedges at high
   thread counts. `design.yml` sets `vlsi.core.max_threads: 8` for this; drop to 1 if needed.
-- **`make buildfile` emits `hammer.d` instead of the DAG**: it needs `vlsi.core.build_system:
-  sledgehammer` to win the config merge (it loads after `tools.yml`).
+- **`sledgehammer buildfile` says the build registered no DAG for this directory**: usually
+  the build wrote `hammer.d` but no `hammer_dag.py`. It needs `vlsi.core.build_system:
+  sledgehammer` to win the config merge (it loads after `tools.yml`). With that key it writes
+  both files. If an earlier build already wrote the obj_dir's `hammer.d`, delete it before
+  you rerun, or make can skip the rule and regenerate nothing. If you set
+  `vlsi.core.airflow_dags_folder`, it must be the folder Airflow reads. When another of your
+  DAGs already comes from `vlsi/`, it lists that DAG as `registered` instead of printing
+  this message, so check the name.
 - **Never run a bare `uv sync`** in the hammer venv: it resets to the lockfile and wipes the
   Airflow stack (installed outside the lock). Refresh the editable install with
   `uv pip install -e . --force-reinstall --no-deps`, or restore Airflow via `uv_setup.sh`.
 - **Secrets** live GPG-encrypted in `<hammer>/.sledgehammer/airflow-secrets.env.gpg`.
-  `venv.sh` decrypts and loads them on source. `airflow.cfg` ships with a blank connection.
+  `venv.sh` decrypts and loads them on source, and the `sledgehammer` flow commands decrypt
+  them themselves when the environment lacks them. `airflow.cfg` ships with a blank
+  connection.
 - **The PD cache** lives in Postgres (`sledgehammer_studio.hammer_poc`), separate from the
   build dir and the Airflow metadata DB. Clearing the build dir or deleting DAG runs does
   not touch cached blobs.
@@ -204,4 +262,4 @@ Re-source both in every new shell.
 
 **Environments:** Chipyard conda Python 3.10.14, SledgeHammer uv venv Python 3.11.15,
 Airflow 3.1.0 plus providers-fab 3.6.3, uv 0.11.x.
-**Updated:** 2026-06-27.
+**Updated:** 2026-10-03.

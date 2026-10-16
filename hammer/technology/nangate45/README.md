@@ -5,8 +5,8 @@ This is a PDK that comes packaged with [OpenROAD-flow](https://github.com/The-Op
 Dummy SRAMs
 -----------
 The Nangate45 plugin comes with fake SRAMs without behavioral models or GDS files. 
-They only have timing libs for the TT corner (same as the pdk's stcell lib).
+They only have timing libs for the TT corner (same as the pdk's stdcell lib).
 
 Supported Tools
 ---------------
-Only the OpenROAD-flow tools are suported, but compatibility between the two plugins is no longer maintained.
+Only the OpenROAD-flow tools are supported, but compatibility between the two plugins is no longer maintained.

@@ -13,18 +13,31 @@ Technology Install
 
 The user may supply the PDK to Hammer as an already extracted directory and/or as a tarball that Hammer can automatically extract. Setting ``technology.TECH_NAME.<dir>`` key (as defined in the plugin's ``defaults.yml``) will fill in as the path prefix for paths supplied to PDK files.
 
-Path prefixes can be supplied in multiple forms. The options are as follows (taken from ``prepend_dir_path`` in ``hammer/tech/__init__py``):
+Path prefixes can be supplied in multiple forms. The options are as follows (taken from ``prepend_dir_path`` in ``hammer/tech/__init__.py``):
 
 #. Absolute path: the path starts with "/" and refers to an absolute path on the filesystem
+
    * ``/path/to/a/lib/file.lib`` -> ``/path/to/a/lib/file.lib``
+
 #. Tech plugin relative path: the path has no "/"s and refers to a file directly inside the tech plugin folder (no subdirectories allowed, else it conflicts with 3-5. below!)
+
    * ``techlib.lib`` -> ``<tech plugin package>/techlib.lib``
+
 #. Tech cache relative path: the path starts with an identifier which is "cache" (this is used in the SKY130 example below)
+
    * ``cache/primitives.v`` -> ``<tech plugin cache dir>/primitives.v``
+
 #. Install relative path: the path starts with an install/tarball identifier (installs.id, tarballs.root.id) and refers to a file relative to that identifier's path
+
    * ``pdkroot/dac/dac.lib`` -> ``/nfs/ecad/techname100/stdcells/dac/dac.lib``
+
 #. Library extra_prefix path: the path starts with an identifier present in the provided library's ``extra_prefixes`` Field
+
    * ``lib1/cap150f.lib`` -> ``/design_files/caps/cap150f.lib``
+
+When Hammer loads the technology, it runs the plugin's post-installation script and then checks every library, DRC deck and LVS deck path, in any of the forms above, against the tech cache: if the cache holds a file with the same name, or the same stem with ``.spice`` and ``.cdl`` swapped, Hammer uses that file instead.
+If ``vlsi.technology.manually_override_pdk_collateral`` is true, a matching entry in ``vlsi.technology.override_libraries`` takes priority over both the original and the cached file.
+The Sky130 plugin relies on this to use the tech LEF, CDL and Verilog files that it patches into the cache.
 
 Below is an example of the installs and tarballs defining path prefixes from the Sky130 and ASAP7 plugins.
 
@@ -40,7 +53,8 @@ Pydantic:
           installs = [
               PathPrefix(id = "$SKY130_NDA", path = "technology.sky130.sky130_nda"),
               PathPrefix(id = "$SKY130A", path = "technology.sky130.sky130A"),
-              PathPrefix(id = "$SKY130_CDS", path = "technology.sky130.sky130_cds")
+              PathPrefix(id = "$SKY130_CDS", path = "technology.sky130.sky130_cds"),
+              PathPrefix(id = "$SKY130_SCL", path = "technology.sky130.sky130_scl")
           ],
           #fields skipped...
         )
@@ -77,7 +91,7 @@ The ``id`` field is used within the file listings further down in the file to pr
 DRC/LVS Deck Setup
 ---------------------------------
 
-As many DRC & LVS decks for as many tools can be specified in the ``drc decks`` and ``lvs decks`` keys. Additional DRC/LVS commands can be appended to the generated run files by specifying raw text in the ``additional_drc_text`` and ``additional_lvs_text`` keys. 
+As many DRC & LVS decks for as many tools can be specified in the ``drc_decks`` and ``lvs_decks`` keys. Additional DRC/LVS commands can be appended to the generated run files by specifying raw text in the ``additional_drc_text`` and ``additional_lvs_text`` keys.
 
 Pydantic:
 
@@ -90,13 +104,13 @@ Pydantic:
           drc_decks = [
               DRCDeck(tool_name = "calibre", deck_name = "calibre_drc", path = "$SKY130_NDA/s8/V2.0.1/DRC/Calibre/s8_drcRules"),
               DRCDeck(tool_name = "klayout", deck_name = "klayout_drc", path = "$SKY130A/libs.tech/klayout/drc/sky130A.lydrc"),
-              DRCDeck(tool_name = "pegasus", deck_name = "pegasus_drc", path = "$SKY130_CDS/Sky130_DRC/sky130_rev_0.0_1.0.drc.pvl")
+              DRCDeck(tool_name = "pegasus", deck_name = "pegasus_drc", path = self.get_setting("technology.sky130.drc_deck"))
           ],
           additional_drc_text = "",
           #fields skipped...
       )
 
-The example above contains decks for 3 different tools, with file pointers using the installs prefixes defined before.
+The example above contains decks for 3 different tools. The Calibre and KLayout decks use the installs prefixes defined before, and the Pegasus deck path comes from the ``technology.sky130.drc_deck`` setting.
 
 JSON:
 
@@ -109,7 +123,7 @@ JSON:
       "path": "ASAP7_PDK_CalibreDeck.tar/calibredecks_r1p7/calibre/ruledirs/lvs/lvsRules_calibre_asap7.rul"
     }
   ],
-  "additional_lvs_text": "LVS SPICE EXCLUDE CELL \*SRAM*RW*\"\nLVS BOX \"SRAM*RW*\"\nLVS FILTER \*SRAM*RW*\" OPEN", 
+  "additional_lvs_text": "LVS SPICE EXCLUDE CELL \"SRAM*RW*\"\nLVS BOX \"SRAM*RW*\"\nLVS FILTER \"SRAM*RW*\" OPEN",
 
 The file pointers, in this case, use the tarball prefix because Hammer will be extracting the rule deck directly from the ASAP7 tarball. The additional text is needed to tell Calibre that the dummy SRAM cells need to be filtered from the source netlist and boxed and filtered from the layout.
 
@@ -128,13 +142,14 @@ Pydantic:
 
   def gen_config(self) -> None:
       #...
+      SKY130A = self.get_setting("technology.sky130.sky130A")
       libs = [
-          Library(lef_file = "cache/sky130_fd_sc_hd__nom.tlef", verilog_sim = "cache/primitives.v", provides = [Provide(lib_type = "technology")]),
-          Library(spice_file = "$SKY130A/libs.ref/sky130_fd_io/spice/sky130_ef_io__analog.spice", provides = [Provide(lib_type = "IO library")])
+          Library(lef_file = os.path.join(SKY130A, "libs.ref/sky130_fd_sc_hd/techlef/sky130_fd_sc_hd__nom.tlef"), verilog_sim = os.path.join(SKY130A, "libs.ref/sky130_fd_sc_hd/verilog/primitives.v"), provides = [Provide(lib_type = "technology")]),
+          Library(lef_file = "cache/sky130_ef_io.lef", provides = [Provide(lib_type = "iocell", vt = "RVT")])
       ]
       #...
       #Generate loops
-      SKYWATER_LIBS = os.path.join('$SKY130A', 'libs.ref', library)
+      SKYWATER_LIBS = os.path.join(SKY130A, 'libs.ref', library)
       for cornerfilename in lib_corner_files:
           #...
           lib_entry = Library(
@@ -166,7 +181,7 @@ Pydantic:
           #fields skipped...
       )
 
-In the above example, we use the ``$SKY130A`` prefix and some loops to generate Library entries. These loops are often derived from the directory structure of the standard cell library.
+In the above example, we join paths onto ``SKY130A`` (the value of the ``technology.sky130.sky130A`` setting) and use some loops to generate Library entries. These loops are often derived from the directory structure of the standard cell library. The tech LEF and ``primitives.v`` paths name the original PDK files, and Hammer swaps in the patched copies from the tech cache as described in `Technology Install`_. The ``sky130_ef_io.lef`` entry names its patched copy directly with the ``cache`` prefix.
 
 JSON:
 
@@ -323,12 +338,12 @@ The ``physical_only_cells_list`` is used to denote cells that contain only physi
           physical_only_cells_list = [
               "sky130_fd_sc_hd__tap_1", "sky130_fd_sc_hd__tap_2", "sky130_fd_sc_hd__tapvgnd_1", "sky130_fd_sc_hd__tapvpwrvgnd_1",
               "sky130_fd_sc_hd__fill_1", "sky130_fd_sc_hd__fill_2", "sky130_fd_sc_hd__fill_4", "sky130_fd_sc_hd__fill_8",
-              "sky130_fd_sc_hd__diode_2"]
+              "sky130_fd_sc_hd__diode_2"],
           dont_use_list = [
               "*sdf*",
               "sky130_fd_sc_hd__probe_p_*",
               "sky130_fd_sc_hd__probec_p_*"
-          ]
+          ],
           #fields skipped...
       )
 
@@ -369,7 +384,7 @@ The ``physical_only_cells_list`` is used to denote cells that contain only physi
 Full Schema
 -----------
 
-Note that in the the schema tables presented below, items with ``#/definitions/<class_name>`` are defined in other schema tables. This is done for documentation clarity, but in your JSON file, those items would be hierarchically nested.
+Note that in the schema tables presented below, items with ``#/definitions/<class_name>`` are defined in other schema tables. This is done for documentation clarity, but in your JSON file, those items would be hierarchically nested.
 
 .. jsonschema:: schema.json
    :lift_definitions:

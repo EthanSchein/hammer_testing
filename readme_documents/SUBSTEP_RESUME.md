@@ -12,9 +12,9 @@ first-class mechanism with three layers:
 2. **Validated manual selection.** `--from_step` / `--only_step` (CLI or the
    DAG trigger form) refuse to start from a step whose checkpoint does not
    exist, and tell you what is available instead.
-3. **Database checkpoints.** A failed or paused stage pushes its newest
-   trusted checkpoint to Postgres, so a fresh checkout, a wiped rundir, or a
-   teammate's machine can resume a run it never executed.
+3. **Database checkpoints.** A running, failed or paused stage pushes its
+   newest trusted checkpoint to Postgres, so a fresh checkout, a wiped
+   rundir, or a teammate's machine can resume a run it never executed.
 
 ## How a checkpoint earns trust
 
@@ -33,17 +33,24 @@ A checkpoint is only used when all of these hold:
    or paused.
 2. The inputs haven't changed. A marker file in the rundir records the stage
    key (the same config+RTL fingerprint the PD cache uses) for the attempt
-   that produced the checkpoints. Any config or RTL change means the
-   checkpoints describe a different design: they are deleted and the run
-   starts from scratch (after checking the database for a checkpoint pushed
-   under the new key, e.g. from another machine).
+   that produced the checkpoints. Any change to the RTL or to the config that
+   key covers means the checkpoints describe a different design: they are
+   deleted and the run starts from scratch (after checking the database for
+   a checkpoint pushed under the new key, e.g. from another machine). The
+   stage key leaves out SledgeHammer's run-control keys (the `vlsi.pd_cache`,
+   `vlsi.substep_resume` and `vlsi.error_scan` keys, and
+   `vlsi.core.airflow_*`), so changing one of those never invalidates the
+   checkpoints.
 3. It hasn't been burned. If a resume makes no progress (no new confirmed
-   checkpoint), that rung is burned and the next attempt uses the next older
-   one, ending at a scratch run. The `read_db` in a resume script is guarded
+   checkpoint), the rung it resumed from is burned and the next attempt uses
+   the next older one, ending at a scratch run. When the ladder runs out with
+   database checkpoints on, the burned steps' rows for the current inputs are
+   deleted too, so the next run starts from scratch instead of fetching the
+   same bad checkpoint again. The `read_db` in a resume script is guarded
    (`catch` + exit) because both tools otherwise drop to an interactive
    prompt on a bad database and hang the run forever: a corrupt checkpoint
-   now costs one failed attempt of about half a minute, never a hang and
-   never a loop.
+   costs one failed attempt of about half a minute, never a hang and never a
+   loop.
 
 One clamp per tool: a resume never starts later than `write_regs`, because
 the output bookkeeping needs the tail steps to run in the current invocation.
@@ -55,9 +62,13 @@ Every failure exit of a stage (tool crash, deliberate pause, error-scan
 policy failure) pushes the newest trusted checkpoint to Postgres: the
 `pre_<step>` file (genus) or directory (innovus), compressed, keyed by the
 stage key and step, with design / module / owner / DAG / project provenance.
+While the tool runs, the same push also fires from a background streamer,
+which checks every 300 seconds (`HAMMER_CHECKPOINT_STREAM_SECS`) and pushes
+any newer confirmed checkpoint, so a SIGKILL or a node crash loses at most
+one interval. `HAMMER_CHECKPOINT_STREAM=0` turns the streamer off.
 When the stage later commits successfully its rows are deleted, so the table
-only ever holds stages that are currently broken or paused. That makes
-`studio checkpoints` a live answer to "what is resumable right now".
+only ever holds stages that are currently running, broken or paused. That
+makes `studio checkpoints` a live answer to "what is resumable right now".
 
 Restores prefer local files and fall back to the database. The fallback
 covers three cases: an empty rundir (fresh checkout, wiped workspace, another
@@ -78,7 +89,7 @@ Commands and switches:
   with `--from_step`. This is the manual bridge for continuing a run whose
   config has since changed; it prints the exact `--from_step` to use next.
 - Clearing is automatic and follows the flow: the rundir's marker remembers
-  every config key it attempted, and a successful run deletes the rows for
+  up to ten earlier config keys, and a successful run deletes the rows for
   its current key plus that whole lineage. Completing a stage after a config
   fix therefore sweeps the rows its own broken predecessors pushed, while a
   teammate debugging a different config of the same design keeps their row
@@ -90,36 +101,39 @@ Commands and switches:
 
 ## Choosing a step by hand
 
-Explicit step flags always win over automatic resume, and they now mean what
-they say:
+Explicit step flags always win over automatic resume:
 
 - `--from_step X` / `--only_step X` first verify that `pre_X` exists, locally
   or in the database (a database hit is downloaded into the rundir
   automatically). If it exists nowhere, the run refuses in seconds with the
   list of steps that are available locally and in the database, instead of
   wedging the tool on a checkpoint that was never written.
-- Explicit step flags bypass the unchanged-inputs skip. Previously a
-  `--from_step` on an already-committed stage silently did nothing in two
-  seconds; now asking for a step means the stage runs.
-- `--force` still means a scratch run: it skips the PD cache lookup, runs
+- Explicit step flags bypass the unchanged-inputs skip: asking for a step
+  means the stage runs, even when it is already committed.
+- Step flags also skip the PD cache lookup, and a step-flag run is never
+  stored in the cache, since it may be partial.
+- `--force` means a scratch run: it skips the PD cache lookup, runs
   the tool and overwrites the cache entry. Without `--force` or step flags, a
   whole-stage cache HIT still beats resume: if the finished result is in the
   cache there is nothing to resume.
+- `--force` together with a start step (`--from_step`, `--after_step` or
+  `--only_step`) keeps the checkpoints, so the stage starts from that step;
+  it also bypasses the unchanged-inputs skip. Plain `--force`, also with
+  only `--to_step`, clears them and starts from scratch.
 
 Note the checkpoint a step flag needs is the boundary written before that
-step, so after a pause at `add_tieoffs` the resumable step is the next one
-whose boundary got written. `studio checkpoints` or the refusal message will
-tell you the exact names.
+step, and a pause writes no `pre_` boundary after its stop step. After
+`--to_step add_tieoffs` the newest is `pre_add_tieoffs`, so you continue with
+`--from_step add_tieoffs` (which reruns that step), not `write_regs`.
+`studio checkpoints` or the refusal message will tell you the exact names.
 
 ## Pausing a stage
 
-`--to_step X` stops the stage after step X. Two fixes make this usable:
+`--to_step X` stops the stage after step X:
 
-- Genus actually runs. Its tool launch used to be the last step of the list,
-  so stopping earlier emitted a truncated script and never started the tool.
-  The launch now happens even when flow control stops before it.
-- A paused run is treated as deliberately incomplete rather than as success
-  or as a mystery error. The selected steps execute and checkpoint (and push
+- The tool still starts: Genus launches even when flow control stops before
+  the end of its step list.
+- A paused run is deliberately incomplete. The selected steps execute and checkpoint (and push
   to the database), but the stage does not commit: no output json, the
   dependency state stays needs-rerun, and the exit code is nonzero so make
   and DAG tasks cannot treat a half-run stage as done. The log says exactly
@@ -133,8 +147,9 @@ whatever you wanted to look at, plain rerun to continue.
 
 A successful resume records a `RESUME` event in the time-saved ledger. Its
 `saved_seconds` is measured, not estimated: the span of the previous
-attempt's checkpoint timestamps covering the steps that were skipped
-(unknown, and left null, when the checkpoint came from the database). The
+attempt's checkpoint timestamps covering the steps that were skipped. A
+checkpoint from the database carries the span measured where it was pushed;
+one pushed with `studio checkpoints-push` has none, so it stays null. The
 report shows it as "Saved by substep resume" and counts it in SLEDGEHAMMER
 TIME SAVED. Legacy hammer could achieve the same skip with a hand-written
 `--from_step`, so quote this bucket separately if a reviewer pushes back;
@@ -144,17 +159,55 @@ the automation, validation, and cross-machine restore are what the fork adds.
 
 Automatic resume needs nothing from the UI: DAG tasks run the same CLI path,
 so a task that dies mid-tool resumes on the next triggered run by itself
-(the `redo` checkbox forces a scratch run of the selected stages instead, and
+(the `Redo` checkbox forces a scratch run of the selected stages instead, and
 `Redo all` of every stage the run executes). Manual step selection is
 in the trigger form, injected straight into the task's argv:
 
-- `From step` / `To step` / `Only step` - free-text sub-step names, validated
+- `From step` / `To step` / `Only step`: free-text sub-step names, validated
   the same way as the CLI flags.
-- `Step flags apply to` - which stage the fields target (`syn` or `par`), so
-  a from_step meant for syn can never leak into par or a bridge action.
+- `Step flags apply to`: which stage the fields target (`syn` or `par`), so
+  a from_step meant for syn can never leak into par or a bridge action. On
+  the `sledgehammer` CLI it is `--steps-stage` (default `syn`), so par step
+  flags need `--steps-stage par`.
 
-Example: rerun just the tieoff insertion of a hierarchical module: select
+Example: rerun a hierarchical module from its tieoff insertion on: select
 `syn`, Modules `RocketTile`, From step `add_tieoffs`.
+
+## Turning it off
+
+Automatic resume is on by default. You can turn it off in two places:
+
+- `HAMMER_SUBSTEP_RESUME=0` in the environment that runs the tasks. DAG tasks
+  inherit the stack's environment, so launch the stack with
+  `HAMMER_SUBSTEP_RESUME=0 sledgehammer` (or start your edge worker with it).
+  It holds for every run until you relaunch without it. Prefixing
+  `sledgehammer run` or `sledgehammer syn` with it has no effect: those
+  commands only trigger the run.
+- `vlsi.substep_resume.enabled: false` in a project YAML, for a switch that
+  stays with the design. Its default, `true`, is in
+  `hammer/config/defaults.yml`.
+
+When the variable is set it wins over the YAML in either direction, so
+`HAMMER_SUBSTEP_RESUME=1` turns resume back on over a `false` in the YAML. The
+variable reads `0`, `false`, `no`, `off` (any case) and an empty value as off.
+In the YAML, `false`, `0`, `no` and `off` turn it off and `true`, `1`, `yes`
+and `on` turn it on (any case). A value Hammer does not recognize, such as a
+misspelling, logs a warning and leaves resume on.
+
+With resume off, a plain rerun after a crash or a pause starts from scratch,
+and no stage pushes checkpoints to the database. Step flags still work:
+`--from_step` and `--only_step` still check for the checkpoint and can still
+fetch it from the database.
+
+Database checkpoints have their own pair, read the same way and with the same
+precedence: `HAMMER_DB_CHECKPOINTS=0` or
+`vlsi.substep_resume.db_checkpoints: false`. Nothing is then pushed, fetched
+or cleared, step flags see only local checkpoints, and local resume keeps
+working. The `studio checkpoints` commands ignore both switches.
+
+Neither YAML key is part of the stage key or the dependency check, so adding,
+changing or removing one never marks a stage to rerun, never changes its PD
+cache key and never invalidates its checkpoints.
 
 ## Verified behavior
 
@@ -185,17 +238,16 @@ unit-checked (12 genus + 6 innovus + 10 database unit checks also pass):
   (tempus, joules, conformal, openroad) would follow the same per-tool
   confirm-pattern + ceiling recipe.
 - A paused or crashed task shows as a red FAILED task in the Airflow UI even
-  though a pause is intentional. Mapping the pause to Airflow's SKIPPED
-  state (distinct exit code + AirflowSkipException in the task wrapper) is a
-  small planned improvement.
-- Config changes invalidate checkpoints by design. After you fix a config or
-  hook, automatic resume goes scratch; the supported debug loop is manual
-  `--from_step` on the same machine (local checkpoints are accepted by
-  presence, since naming a step is taking responsibility). An opt-in
-  `allow_config_change` for automatic and cross-machine resume across a fix
-  is designed but deliberately not built yet.
+  though a pause is intentional: the task wrapper fails the task on any
+  nonzero exit code, and a pause exits nonzero.
+- Config changes, other than to SledgeHammer's run-control keys, invalidate
+  checkpoints by design. After you fix a config or hook, automatic resume
+  goes scratch; the supported debug loop is manual `--from_step` on the same
+  machine (local checkpoints are accepted by presence, since naming a step is
+  taking responsibility). No setting lets automatic resume, local or from
+  the database, carry across a config change; for a database checkpoint,
+  `studio checkpoints-fetch` is the manual bridge.
 - If a run SUCCEEDED and you then delete its outputs with the cache off, the
   dependency check skips without re-running and nothing regenerates the
-  outputs (the pre-existing SKIP_NO_BLOB hole). With the cache on,
-  SKIP_RESTORED already covers this. Wiring resume into that skip path is
-  future work.
+  outputs (the SKIP_NO_BLOB hole). With the cache on,
+  SKIP_RESTORED already covers this. Resume does not run on that skip path.

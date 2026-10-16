@@ -17,7 +17,7 @@ vlsi.core.technology_path_meta: append
 
 vlsi.core.synthesis_tool: <syn_tool_name>
 vlsi.core.synthesis_tool_path: ["hammer-<vendor>-plugin/syn"]
-vlsi.core.synthesis_tool_meta: append
+vlsi.core.synthesis_tool_path_meta: append
 ```
 
 Now, you simply need to specify the package name:
@@ -56,7 +56,7 @@ Previously, the technology JSON file may have contained entries like this:
 "gds map file": "path/to/layermap.file"
 ```
 
-Now, keys must not contain spaces in line with JSON syntax:
+Now, keys must not contain spaces:
 
 ```json
 "gds_map_file": "path/to/layermap.file"
@@ -145,13 +145,13 @@ action.tool.layer_map: "layer.map"
 action.tool.layer_map_meta: prependlocal
 ```
 
-However, within a plugin, if you need to access to a specific file for a tool-specific hook, for example, in `action/action_tool/__init__.py`, replace this:
+However, within a plugin, if you need to access a specific file for a tool-specific hook, for example, in `action/action_tool/__init__.py`, replace this:
 
 ```python
 with open(os.path.join(self.tool_dir, "tool.options")) as f:
 ```
 
-With this and append `Pathlib` methods like `read_text()` as required:
+With this and append `pathlib` methods like `read_text()` as required:
 
 ```python
 importlib.resources.files(self.package).joinpath("tool.options")
@@ -159,4 +159,6 @@ importlib.resources.files(self.package).joinpath("tool.options")
 
 ## `pyproject.toml`
 
-Plugins that are repositories separate from Hammer must now have a `pyproject.toml` file so that they become poetry projects. Refer to [](poetry_project) for details. 
+Plugins that are repositories separate from Hammer must now have a `pyproject.toml` file so that they become poetry projects. Refer to [Hammer Setup](Hammer-Setup.md) for details.
+
+> **SledgeHammer:** SledgeHammer builds with uv and hatchling instead of poetry, and a plugin's `pyproject.toml` does not need to use poetry. `./scripts/uv_setup.sh` installs every `hammer-*-plugin*` repository next to your Hammer checkout that has a `pyproject.toml` or `setup.py`. To install a plugin from elsewhere, run `uv pip install -e <plugin dir> --python <hammer dir>/.venv/bin/python --no-deps`, where `--no-deps` keeps uv from replacing your editable Hammer install with a PyPI `hammer-vlsi` that the plugin may depend on. See [WORKSPACE_SETUP.md](https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/WORKSPACE_SETUP.md) for the full workspace setup.

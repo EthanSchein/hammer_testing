@@ -7,8 +7,8 @@ IC Validator is very command-line driven. Here are some usage notes:
 * Extensibility is enabled by passing a file to the icv command with `-clf`. This file contains additional command line arguments, and is generated in the `generate_<drc/lvs>_args_file` step (can be overridden).
 * Decks are included using the `generate_<drc/lvs>_run_file` step (can be overridden with additional ICV method calls).
 * Results/violations are generated in a format readable by VUE (interactive violation browser) using the `-vue` option.
-* Layout is viewed using IC Validator Workbench (ICVBV). It can communicate with VUE to generate violation markers by opening up a socket to ICV. The socket number can range between 1000 and 65535 (selectable by `<drc/lvs>.icv.icvwb_port`. Running the `generated_scripts/view_<drc/lvs>` script will handle this automatically, by starting ICVWB, opening the port, waiting for it to be listening, and then starting VUE.
-* ICVWB layer mapping can be specified in `synopsys.layerprops` key.
+* Layout is viewed using IC Validator Workbench (ICVWB). It can communicate with VUE to generate violation markers by opening up a socket to ICV. The socket number can range between 1000 and 65535 (selectable by `<drc/lvs>.icv.icvwb_port`). Running the `generated-scripts/view_<drc/lvs>` script in the DRC/LVS run directory will handle this automatically, by starting ICVWB, opening the port, waiting for it to be listening, and then starting VUE.
+* ICVWB layer mapping can be specified in the `synopsys.layerprops` key. The key has no default, so set it to `null` if you have no layer mapping file.
 
 Tested with:
 

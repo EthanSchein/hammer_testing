@@ -19,7 +19,7 @@ Simulation Input Keys
 
     * ``input_files`` ([])
 
-        * A list of file paths to source files (verilog sources, testharness/testbench, etc.) to be passed to the synthesis tool (both verilog and any other source files needed). The paths may be relative to the directory in which ``hammer-vlsi`` is called.
+        * A list of file paths to source files (verilog sources, testharness/testbench, etc.) to be passed to the simulation tool (both verilog and any other source files needed). The paths may be relative to the directory in which ``hammer-vlsi`` is called.
 
     * ``top_module`` (str)
 
@@ -59,11 +59,11 @@ Simulation Input Keys
 
     * ``tb_dut`` (str)
 
-        * Hierarchical path to the to top level instance of the "dut" from the testbench.
+        * Hierarchical path to the top level instance of the "dut" from the testbench.
 
-    * ``level`` (``"rtl"`` or ``"gl"``)
+    * ``level`` (``"rtl"``, ``"syn"``, or ``"par"``)
 
-        * This defines whether the simulation being run is at the RTL level or at the gate level.
+        * This defines whether the simulation being run is at the RTL level or at the gate level after synthesis or place-and-route.
 
     * ``all_regs`` (str)
 
@@ -85,12 +85,13 @@ Simulation Input Keys
 
         * Setting to false means that the simulation will be entirely functional. Setting to true means that the simulation will be time annotated based on synthesis or P&R results.
 
-    * ``saif.mode`` (``"time"``, ``"trigger"``, ``"trigger_raw"``, or ``"full"``)
+    * ``saif.mode`` (``"time"``, ``"trigger"``, ``"trigger_raw"``, ``"full"``, or ``"none"``)
 
-        * ``"time"``: pair with ``saif.mode.start_time`` and ``saif.mode.end_time`` (TimeValue) to dump between 2 timestamps
+        * ``"time"``: pair with ``saif.start_time`` and ``saif.end_time`` (TimeValue) to dump between 2 timestamps
         * ``"trigger"``: inserts a trigger into the simulator run script
-        * ``"trigger_raw"``: inserts a given start/end trigger tcl script into the simulator run script. Specify scripts with ``saif.mode.start_trigger_raw`` and ``saif.mode.end_trigger_raw`` (str)
+        * ``"trigger_raw"``: inserts a given start/end trigger tcl script into the simulator run script. Specify scripts with ``saif.start_trigger_raw`` and ``saif.end_trigger_raw`` (str)
         * ``"full"``: dump the full simulation
+        * ``"none"``: do not dump a SAIF (the default)
 
     * ``execution_flags`` ([str])
 
@@ -99,14 +100,19 @@ Simulation Input Keys
 
     * ``execute_sim`` (true or false)
 
-        * Determines whether or not the simulation executable that is generated with the above inputs with the given flags or if the executable will just be generated.
+        * Determines whether the simulation executable that is generated with the above inputs will actually be executed with the given flags or if the executable will just be generated.
 
 
 Simulation Inputs
 -------------------------------
 
 There are no prerequisites to running an RTL simulation other than setting the keys that are described above. Running the ``syn-to-sim`` action after running synthesis will automatically generate the Hammer IR required to pipe the synthesis outputs to the Hammer simulation tool, and should be included in the Hammer call, as demonstrated in the "Post-Synthesis Gate Level Sim" command below.  The same goes for post-place-and-route simulations. The required files for these simulations
-(SDF, SPEF, etc.) are generated and piped to the simulation tool in the corresponding action's outputs.
+(netlist, SDF, etc.) are generated and piped to the simulation tool in the corresponding action's outputs.
+
+.. note::
+    In SledgeHammer, every DAG task runs Hammer from the directory the DAG was generated in, so relative paths in ``sim.inputs.input_files`` resolve against that directory wherever you run ``sledgehammer``.
+    The ``sim_rtl`` task passes only the project configs the DAG was generated with, so a config that a Makefile adds for one target, such as ``configs-design/<design>/sim-rtl.yml`` for ``make sim-rtl`` in ``e2e/``, applies only if it is one of those configs.
+    The ``sim_syn`` and ``sim_par`` tasks take only the output of ``syn-to-sim`` or ``par-to-sim`` as their project config, so they use the ``sim.inputs`` keys from the full config that synthesis (for ``sim_syn``) or place-and-route (for ``sim_par``) wrote the last time it was not skipped.
 
 The Hammer simulation tool will initialize register values in the simulation, as that is of particular need when simulating Chisel-based designs, to deal with issues around x-pessimism.
 
@@ -114,6 +120,9 @@ Simulation Outputs
 -------------------------------
 
 The simulation tool is able to output waveforms for the simulation. All of the relevant outputs of the simulation can be found in ``OBJ_DIR/sim-rundir/``.
+
+.. note::
+    In SledgeHammer, the DAG passes ``--sim_rundir`` to each simulation stage, so the outputs land in ``OBJ_DIR/sim-rtl-rundir/``, ``OBJ_DIR/sim-syn-rundir/`` or ``OBJ_DIR/sim-par-rundir/`` (``OBJ_DIR/sim-rtl-<module>/``, ``OBJ_DIR/sim-syn-<module>/`` or ``OBJ_DIR/sim-par-<module>/`` in a hierarchical flow).
 
 Simulation Commands
 -------------------------------
@@ -137,3 +146,11 @@ Simulation Commands
 * Post-P&R Gate Level Sim
 
     * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/par-to-sim_input.json --obj_dir OBJ_DIR sim``
+
+.. note::
+    In SledgeHammer, you run these with ``sledgehammer sim-rtl -t <design>``, ``sledgehammer sim-syn -t <design>`` or ``sledgehammer sim-par -t <design>``, which trigger the DAG registered for that design.
+    ``<design>`` is the name the DAG was registered under, by default the basename of its ``OBJ_DIR`` (such as ``gcd`` for ``build-sky130-cm/gcd``), which is not always the top module. From the vlsi directory you can leave out ``-t`` when only one registered DAG belongs to that directory.
+    With ``vlsi.core.build_system: sledgehammer`` in your project config, register that DAG first by running ``sledgehammer buildfile`` from the vlsi directory (it runs ``make buildfile``, or ``make build`` when the Makefile has a ``build`` rule and no ``buildfile`` rule, as in ``e2e/``).
+    If no DAG is registered for ``<design>``, the command exits with ``no DAG registered for <design>`` and runs nothing, even when the current directory has a DAG of its own.
+    You do not run ``syn-to-sim`` or ``par-to-sim`` yourself: for ``sim-syn`` and ``sim-par`` the DAG first brings synthesis (and, for ``sim-par``, place-and-route) up to date, skipping each one when it is unchanged, and then runs the conversion step.
+    The simulation itself has no dependency check and is not cached, so it runs again every time a run includes it.

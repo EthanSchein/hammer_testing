@@ -12,7 +12,7 @@ Power Setup Keys
     * ``power_tool``
         * Module of the power tool, e.g. ``hammer.power.voltus``
 
-Simulation Input Keys
+Power Input Keys
 -------------------------------
 
 * Namespace: ``power.inputs``
@@ -27,7 +27,7 @@ Simulation Input Keys
 
     * ``tb_dut`` (str)
 
-        * Hierarchical path to the to top level instance of the "dut" from the testbench.
+        * Hierarchical path to the top level instance of the "dut" from the testbench.
 
     * ``spefs`` ([str])
 
@@ -54,7 +54,7 @@ Simulation Input Keys
         * If overridden to ``true``, the power tool will report for only the extra MMMC corners, saving runtime. The typical use case is to only report power and rail analysis for a typical/nominal corner.
 
     * ``input_files`` ([str])
-        * A list of the paths to the design inputs files (HDL or netlist) for power analysis.
+        * A list of the paths to the design input files (HDL or netlist) for power analysis.
 
     * ``sdc`` (str)
         * Path to SDC input file.
@@ -68,17 +68,23 @@ Simulation Input Keys
     * ``top_module`` (str)
         * Top RTL module for power analysis.
 
+.. note::
+    In SledgeHammer, every DAG task runs Hammer from the directory the DAG was generated in, so relative paths in ``database``, ``spefs``, ``waveforms`` and ``saifs`` resolve against that directory wherever you run ``sledgehammer``.
+
 Power Inputs
 -------------------------------
 
 Hammer's power analysis can be run with an RTL input, or post-synthesis or post-place-and-route (and with corresponding simulations).
-Auto-translation of of Hammer IR to the power tool from those outputs are accomplished using the ``sim-rtl-to-power``, ``syn-to-power``, ``sim-syn-to-power``, ``par-to-power``, and ``sim-par-to-power`` actions, as demonstrated below.
-The required files for power analysis (database, SAIF, SPEF, etc.) are generated and piped to the power tool from the pre-requisite action's outputs.
+Auto-translation of Hammer IR to the power tool from those outputs is accomplished using the ``syn-to-power``, ``par-to-power``, and ``sim-to-power`` actions, as demonstrated below.
+The required files for power analysis (SAIF, SPEF, etc.) are generated and piped to the power tool from the pre-requisite action's outputs.
 
 Power Outputs
 -------------------------------
 
 The power tool outputs static and active power estimations into the ``OBJ_DIR/power-rundir/`` directory. Exact report format may vary by tool used.
+
+.. note::
+    In SledgeHammer, the DAG passes ``--power_rundir`` to each power stage, so the outputs land in ``OBJ_DIR/power-rtl-rundir/``, ``OBJ_DIR/power-syn-rundir/`` or ``OBJ_DIR/power-par-rundir/`` (``OBJ_DIR/power-rtl-<module>/``, ``OBJ_DIR/power-syn-<module>/`` or ``OBJ_DIR/power-par-<module>/`` in a hierarchical flow).
 
 Power Commands
 -------------------------------
@@ -87,15 +93,15 @@ RTL Power Analysis:
 
 * RTL Sim
 
-    * ``hammer-vlsi -e env.yml -p config.yml --obj_dir OBJ_DIR sim-rtl``
+    * ``hammer-vlsi -e env.yml -p config.yml --obj_dir OBJ_DIR sim``
 
 * Simulation to Power
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rundir/sim-rtl-output.json -o OBJ_DIR/sim-rtl-to-power_input.json --obj_dir OBJ_DIR sim-rtl-to-power``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rundir/sim-output.json -o OBJ_DIR/sim-rtl-to-power_input.json --obj_dir OBJ_DIR sim-to-power``
 
 * Power
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rtl-to-power_input.json --obj_dir OBJ_DIR power-rtl``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rtl-to-power_input.json --obj_dir OBJ_DIR power``
 
 Post-synthesis Power Analysis:
 
@@ -109,15 +115,15 @@ Post-synthesis Power Analysis:
 
 * Post-Syn Gate Level Sim
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/syn-to-sim_input.json --obj_dir OBJ_DIR sim-syn``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/syn-to-sim_input.json --obj_dir OBJ_DIR sim``
 
 * Simulation to Power
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rundir/sim-syn-output.json -o OBJ_DIR/sim-syn-to-power_input.json --obj_dir OBJ_DIR sim-syn-to-power``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rundir/sim-output.json -o OBJ_DIR/sim-syn-to-power_input.json --obj_dir OBJ_DIR sim-to-power``
 
 * Power
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/syn-to-power_input.json -p OBJ_DIR/sim-syn-to-power_input.json --obj_dir OBJ_DIR power-syn``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/syn-to-power_input.json -p OBJ_DIR/sim-syn-to-power_input.json --obj_dir OBJ_DIR power``
 
 Post-P&R Power Analysis:
 
@@ -131,12 +137,21 @@ Post-P&R Power Analysis:
 
 * Post-P&R Gate Level Sim
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/par-to-sim_input.json --obj_dir OBJ_DIR sim-par``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/par-to-sim_input.json --obj_dir OBJ_DIR sim``
 
 * Simulation to Power
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rundir/sim-par-output.json -o OBJ_DIR/sim-par-to-power_input.json --obj_dir OBJ_DIR sim-par-to-power``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/sim-rundir/sim-output.json -o OBJ_DIR/sim-par-to-power_input.json --obj_dir OBJ_DIR sim-to-power``
 
 * Power
 
-    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/par-to-power_input.json -p OBJ_DIR/sim-par-to-power_input.json --obj_dir OBJ_DIR power-par``
+    * ``hammer-vlsi -e env.yml -p config.yml -p OBJ_DIR/par-to-power_input.json -p OBJ_DIR/sim-par-to-power_input.json --obj_dir OBJ_DIR power``
+
+.. note::
+    In SledgeHammer, register the DAG by running ``sledgehammer buildfile`` from the vlsi directory, then run power analysis with ``sledgehammer power-rtl -t <design>``, ``sledgehammer power-syn -t <design>`` or ``sledgehammer power-par -t <design>``, which triggers that DAG.
+    ``<design>`` is the name the DAG was registered under, by default the basename of its ``OBJ_DIR`` (such as ``gcd`` for ``build-sky130-cm/gcd``), which is not always the top module.
+    A name with no registered DAG exits with ``no DAG registered for <design>`` and never falls back to the DAG of the current directory.
+    From the vlsi directory you can leave out ``-t`` unless more than one registered DAG belongs to it.
+    The DAG runs the tasks the power stage depends on for you: the simulation at that level, any synthesis or P&R stage it builds on, and the conversion steps between them, such as ``syn-to-sim``, ``sim-to-power`` and ``par-to-power``.
+    Power analysis itself has no dependency check and is not cached, so it runs again every time a run includes it.
+    See the `CLI reference <https://github.com/lawrencejrhee/hammer/blob/master/readme_documents/CLI_REFERENCE.md>`_.
