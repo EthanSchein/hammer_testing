@@ -675,9 +675,9 @@ def _cmd_status(args, list_only=False) -> int:
     else:
         _, out, _ = _airflow("dags", "list", "-o", "plain")
         # match the _<user> suffix, not a substring: user "u" must not see
-        # sledgehammer_Top_uma
-        dag_ids = [l.split()[0] for l in out.splitlines()
-                   if l.startswith("sledgehammer_") and l.split()[0].endswith(f"_{user}")]
+        # sledgehammer_Top_uma. Airflow can list one DAG many times, so keep each once.
+        dag_ids = list(dict.fromkeys(l.split()[0] for l in out.splitlines()
+                                     if l.startswith("sledgehammer_") and l.split()[0].endswith(f"_{user}")))
     for dag_id in dag_ids:
         _, out, _ = _airflow("dags", "list-runs", dag_id, "-o", "plain")
         rows = [l.split() for l in out.splitlines()[1:] if l.split()]
