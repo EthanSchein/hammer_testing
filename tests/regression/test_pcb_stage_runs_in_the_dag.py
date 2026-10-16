@@ -148,4 +148,5 @@ def test_sledgehammer_runs_pcb_like_make_pcb(trigger) -> None:
 def test_a_dag_from_before_the_pcb_stage_says_to_regenerate(trigger) -> None:
     with pytest.raises(SystemExit) as cm:
         trigger("'forceall': Param(...)", "pcb")
-    assert "predates the pcb stage" in str(cm.value.code)
+    message = str(cm.value.code)
+    assert "predates the pcb stage" in message and "(sledgehammer buildfile)" in message and "make" not in message
