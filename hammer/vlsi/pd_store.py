@@ -50,6 +50,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import stat
 import tarfile
@@ -467,11 +468,39 @@ def _pg_settings(environ: Optional[Mapping[str, str]] = None,
     if password is not None:
         settings["password"] = password
         return settings
+    env_file = stack_env_file()
+    load = (f"Run \"source {env_file}\" if it sets HAMMER_PG_PASSWORD" if env_file
+            else "Run \"source venv.sh\" to load HAMMER_PG_PASSWORD from the encrypted secrets")
     raise DatabaseUnavailable(
-        "No Postgres password found." + (f" {why}." if why else "") + " Run \"source venv.sh\" to load "
-        "HAMMER_PG_PASSWORD from the encrypted secrets, export HAMMER_PG_PASSWORD, or add a ~/.pgpass line "
-        "for this server; \"sledgehammer postgres show\" says where each setting comes from."
+        "No Postgres password found." + (f" {why}." if why else "") + f" {load}, export HAMMER_PG_PASSWORD, or "
+        "add a ~/.pgpass line for this server; \"sledgehammer postgres show\" says where each setting comes from."
     )
+
+
+_STACK_SETS_LOGIN = re.compile(r"^[ \t]*(?:export[ \t]+)?(?:AIRFLOW__DATABASE__SQL_ALCHEMY_CONN|HAMMER_PG_PASSWORD)=",
+                               re.M)
+
+
+def stack_env_file() -> Optional[str]:
+    """The stack env file to name in a no-password hint, shell-quoted with your home as ~: when it sets the conn or the password, or there are no encrypted secrets for venv.sh to load."""
+    try:
+        from hammer.shell.sledgehammer_cli import _find_stack_env
+        found = _find_stack_env()
+    except Exception:
+        return None
+    if not found:
+        return None
+    if any(os.path.isfile(path) for path in (secrets_file(), SECRETS_FILE)):
+        try:
+            with open(found, encoding="utf-8", errors="replace") as f:
+                if not _STACK_SETS_LOGIN.search(f.read(1 << 20)):
+                    return None
+        except OSError:
+            return None
+    home = os.path.expanduser("~").rstrip(os.sep)
+    if home and found.startswith(home + os.sep):
+        return "~/" + shlex.quote(found[len(home) + 1:])
+    return shlex.quote(found)
 
 
 class DatabaseUnavailable(RuntimeError):

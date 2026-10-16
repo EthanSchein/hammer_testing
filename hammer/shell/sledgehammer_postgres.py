@@ -420,11 +420,14 @@ def _no_password(session: _Session, views: List[_View]) -> None:
             why = pd_store.local_password(theirs, view.env, session.target)[1]
             server = _server(theirs["host"][0], theirs["port"][0])
             lacking.setdefault((server, view.env.get("PGPASSFILE") or "~/.pgpass", why), []).append(view.who)
+    env_file = pd_store.stack_env_file()
+    loads = (f"\"source {env_file}\" loads if that file sets it" if env_file
+             else "\"source venv.sh\" loads from the encrypted secrets")
     for (server, pgpass, why), who in lacking.items():
         they = "they" if len(who) > 1 else "it"
         print(f"  {_who(who)} in this shell {'have' if len(who) > 1 else 'has'} no password for the cache, so "
-              f"{they} cannot log in; {they} would take one from HAMMER_PG_PASSWORD, which \"source venv.sh\" "
-              f"loads from the encrypted secrets, or from a line for {server} in {pgpass}")
+              f"{they} cannot log in; {they} would take one from HAMMER_PG_PASSWORD, which {loads}, "
+              f"or from a line for {server} in {pgpass}")
         if why:
             print(f"  {why}")
 
