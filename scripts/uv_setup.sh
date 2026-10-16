@@ -178,30 +178,6 @@ ls "$LIBNSL_LOCAL/usr/lib64/libnsl.so.1"
 step "persist PATH in ~/.bashrc"
 grep -q 'pg_local/usr/bin' "$HOME/.bashrc" 2>/dev/null || \
     printf '\nexport PATH="$HOME/.local/bin:$HOME/pg_local/usr/bin:$PATH"\n' >> "$HOME/.bashrc"
-
-step "remove the old 'sledgehammer' shell function from ~/.bashrc"
-# It shadowed the real command; only the block this script used to write is removed.
-if grep -q '^sledgehammer() {$' "$HOME/.bashrc" 2>/dev/null; then
-    _rc_tmp="$(mktemp)"
-    awk '
-        /^sledgehammer\(\) \{$/ { blk = $0; inblk = 1; next }
-        inblk { blk = blk "\n" $0
-                if ($0 == "}") { if (blk !~ /airflow-standalone-ldap\.py/) print blk; inblk = 0 }
-                next }
-        { print }
-        END { if (inblk) print blk }
-    ' "$HOME/.bashrc" > "$_rc_tmp"
-    if cmp -s "$_rc_tmp" "$HOME/.bashrc"; then
-        echo "  a different sledgehammer() is defined there; left alone, but it shadows the real command"
-    else
-        cp "$HOME/.bashrc" "$HOME/.bashrc.sledgehammer.bak"
-        cat "$_rc_tmp" > "$HOME/.bashrc"
-        echo "  removed (backup: ~/.bashrc.sledgehammer.bak); open a new shell or run: unset -f sledgehammer"
-    fi
-    rm -f "$_rc_tmp"
-else
-    echo "  none found"
-fi
 fi   # end of the default-profile-only prerequisites
 
 step "virtual environment + dependencies"
@@ -302,6 +278,10 @@ for _d in "${_dirs[@]}"; do
     echo "           handing off to its checkout's venv; if it is stale, uninstall it from that environment."
 done
 echo "  $HOME/.local/bin/sledgehammer -> $REPO/.venv/bin/sledgehammer"
+
+step "remove the old 'sledgehammer' shell function from ~/.bashrc"
+# It shadowed the real command; only the block this script used to write is removed, and only now that the link works.
+bash "$REPO/scripts/bashrc_drop_old_sledgehammer.sh" "$HOME/.bashrc"
 fi   # end of the default-profile-only Airflow / Postgres block
 
 step "hammer plugins (editable, any that sit next to this checkout)"
