@@ -1545,9 +1545,9 @@ def _link_dag_into_dags_folder(driver, dag_file: str, dag_id: str) -> None:
     """Symlink the generated DAG into a watched dags folder so it is
     triggerable immediately, with no manual publish step.
 
-    The folder is resolved from, in order: the vlsi.core.airflow_dags_folder
-    config key, the HAMMER_DAGS_FOLDER env var, then this checkout's own
-    dags/ directory (next to the hammer package). The link is named after the
+    The folder is the vlsi.core.airflow_dags_folder config key if set, else
+    whatever `sledgehammer run` resolves (hammer.shell.dags_folder), so a DAG
+    is always linked where it will be looked up. The link is named after the
     dag_id, and a symlink rather than a copy so every regeneration is served
     fresh. Failures only warn -- generation itself already succeeded.
     """
@@ -1556,16 +1556,10 @@ def _link_dag_into_dags_folder(driver, dag_file: str, dag_id: str) -> None:
         dags_folder = driver.database.get_setting("vlsi.core.airflow_dags_folder")
     except Exception:
         pass
-    if not dags_folder:
-        dags_folder = os.environ.get("HAMMER_DAGS_FOLDER")
     try:
         if not dags_folder:
-            # This module lives at <checkout>/hammer/vlsi/hammer_build_systems.py,
-            # so three dirnames up is the checkout root. (hammer.__file__ is None
-            # under editable/namespace installs -- don't use the package attribute.)
-            repo_root = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            dags_folder = os.path.join(repo_root, "dags")
+            from hammer.shell.dags_folder import resolve_dags_folder
+            dags_folder = resolve_dags_folder()[0]
         os.makedirs(dags_folder, exist_ok=True)
         link = os.path.join(dags_folder, dag_id + ".py")
         if os.path.islink(link):

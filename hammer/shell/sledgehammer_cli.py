@@ -264,24 +264,9 @@ def _load_stack_env():
 
 
 def _dags_folder():
-    """Where registered DAGs live, and how we knew.
-
-    Priority: HAMMER_DAGS_FOLDER, then Airflow's own configured dags_folder
-    (authoritative -- it is what the scheduler actually reads), then
-    $AIRFLOW_HOME/dags. Asking Airflow mirrors how --obj_dir asks the
-    Makefile: consult the tool that owns the answer rather than guessing.
-    """
-    env = os.environ.get("HAMMER_DAGS_FOLDER")
-    if env:
-        return env, "$HAMMER_DAGS_FOLDER"
-    try:
-        rc, out, _ = _airflow("config", "get-value", "core", "dags_folder")
-        got = (out or "").strip().splitlines()
-        if rc == 0 and got and got[-1].strip():
-            return got[-1].strip(), "airflow config"
-    except Exception:
-        pass
-    return os.path.join(os.environ.get("AIRFLOW_HOME", REPO), "dags"), "$AIRFLOW_HOME/dags"
+    """Where registered DAGs live, and how we knew: the same resolver the build links with."""
+    from hammer.shell.dags_folder import resolve_dags_folder
+    return resolve_dags_folder()
 
 
 def _dag_obj_dir(dag_file, key="OBJ_DIR"):
