@@ -22,6 +22,9 @@ cd "$REPO"
 _path_before_cleanup="${PATH:-}"
 
 _lab="${SLEDGE_LAB:-}"
+# The caller's PATH and conda, kept before the cleanup below so the link step can spot other sledgehammer copies.
+_caller_path="${PATH:-}"
+_caller_conda_exe="${CONDA_EXE:-}"
 
 # Sanitize the build environment. psycopg2 compiles from source
 # here; whatever OpenSSL / libpq is on the linker path gets baked into the
@@ -271,8 +274,33 @@ python3 -c "import asyncpg" || { echo "ERROR: asyncpg is missing; Airflow 3 need
 step "put 'sledgehammer' on PATH (~/.local/bin)"
 # A link to this one command, so the venv's python and pip do not shadow the system's.
 mkdir -p "$HOME/.local/bin"
+_link="$HOME/.local/bin/sledgehammer"
+_old_link="$(readlink "$_link" 2>/dev/null || true)"
+if [ -n "$_old_link" ] && [ "$(readlink -f "$_link")" != "$(readlink -f "$REPO/.venv/bin/sledgehammer")" ]; then
+    if [ -e "$_link" ]; then
+        echo "  was -> $_old_link"
+    else
+        echo "  was -> $_old_link (no longer exists)"
+    fi
+elif [ -z "$_old_link" ] && [ -e "$_link" ]; then
+    echo "  replacing the file at $_link (a pip --user install?) with the link"
+fi
 ln -sfn "$REPO/.venv/bin/sledgehammer" "$HOME/.local/bin/sledgehammer"
 "$HOME/.local/bin/sledgehammer" --help >/dev/null
+# Any other sledgehammer on the caller's PATH or in its conda (a Chipyard env's, say) can run instead of this one.
+_self="$(readlink -f "$REPO/.venv/bin/sledgehammer")"
+_seen=""
+IFS=: read -ra _dirs <<< "$_caller_path${_caller_conda_exe:+:$(dirname "$_caller_conda_exe")}"
+for _d in "${_dirs[@]}"; do
+    [ -n "$_d" ] && [ -f "$_d/sledgehammer" ] && [ -x "$_d/sledgehammer" ] || continue
+    _r="$(readlink -f "$_d/sledgehammer")"
+    case " $_seen " in *" $_r "*) continue ;; esac
+    _seen="$_seen $_r"
+    [ "$_r" = "$_self" ] && continue
+    echo "  WARNING: $_d/sledgehammer is another copy; it runs instead of this one wherever $_d comes"
+    echo "           first on PATH (check with: type -a sledgehammer). An older copy may run without"
+    echo "           handing off to its checkout's venv; if it is stale, uninstall it from that environment."
+done
 echo "  $HOME/.local/bin/sledgehammer -> $REPO/.venv/bin/sledgehammer"
 fi   # end of the default-profile-only Airflow / Postgres block
 

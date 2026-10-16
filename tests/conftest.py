@@ -45,6 +45,14 @@ def _byte_hash_digest(paths, include_dirs=(), defines=(), top_module=None):
 
 
 @pytest.fixture(autouse=True)
+def _no_sledgehammer_hand_off(request, monkeypatch):
+    """Keep sledgehammer_cli.main() from re-executing into a real checkout's venv; classes with real_hand_off = True opt out."""
+    if not getattr(request.cls, "real_hand_off", False):
+        from hammer.shell import sledgehammer_cli
+        monkeypatch.setattr(sledgehammer_cli, "_delegate_to_checkout_venv", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _byte_hash_placeholder_rtl(request, monkeypatch):
     if request.module.__name__.rsplit(".", 1)[-1] in _PLACEHOLDER_RTL_TEST_MODULES:
         monkeypatch.setattr(rtl_check, "digest_units", _byte_hash_digest)
