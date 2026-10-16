@@ -66,9 +66,7 @@ The `WITH ADMIN OPTION` part is what lets you add and remove members later witho
 studio init
 ```
 
-This creates the `hammer_poc` schema and its ten tables (the artifact cache, the stage-blob cache and its overflow chunks, master databases, checkpoints and their overflow chunks, the cache-event ledger, workspaces, the login whitelist, and notification addresses), plus indexes, and applies default-deny on the schema, with table and sequence grants to `sledgehammer_users`. Idempotent, so re-running it later is fine. Re-run it after you update the checkout, so an existing schema picks up new tables, columns and grants: your teammates' runs can't apply them.
-
-The 2FA secrets table, `hammer_poc.user_totp`, is an eleventh table that `studio init` does not create. The 2FA login page or `studio 2fa` creates it on first use.
+This creates the `hammer_poc` schema and its nine tables (the artifact cache, the stage-blob cache and its overflow chunks, master databases, checkpoints and their overflow chunks, the cache-event ledger, workspaces, and notification addresses), plus indexes, and applies default-deny on the schema, with table and sequence grants to `sledgehammer_users`. Idempotent, so re-running it later is fine. Re-run it after you update the checkout, so an existing schema picks up new tables, columns and grants: your teammates' runs can't apply them.
 
 ### 6. Verify
 

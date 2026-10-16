@@ -8,7 +8,7 @@
 
 > **Prerequisite**: Complete **all of [UV_SETUP.md](UV_SETUP.md)** first (Parts 1 through Step 7). You should have:
 > - Hammer cloned and installed with uv
-> - A working virtual environment (`.venv/`) with `hammer-vlsi`, `psycopg2`, and Airflow 3.1.0 (today `./scripts/uv_setup.sh` also installs `asyncpg`, the FAB and edge3 Airflow providers, and `python-ldap`)
+> - A working virtual environment (`.venv/`) with `hammer-vlsi`, `psycopg2`, and Airflow 3.1.0 (today `./scripts/uv_setup.sh` also installs `asyncpg` and the edge3 Airflow provider)
 > - A PostgreSQL database created and connected
 > - `airflow standalone` running successfully on `http://localhost:8080` (today you start the stack with `sledgehammer` instead)
 >
@@ -553,8 +553,8 @@ airflow standalone
 ```
 
 > **Today**: start the stack with `sledgehammer` instead. It pins `AIRFLOW_HOME` to the
-> checkout, loads the encrypted secrets and starts Airflow with the LDAP login and TOTP second
-> factor. The two demo DAGs no longer load: `sledgehammer dags list` shows your generated
+> checkout, loads the encrypted secrets and starts Airflow, with you as its one login. The two
+> demo DAGs no longer load: `sledgehammer dags list` shows your generated
 > `sledgehammer_<design>_<user>` DAGs.
 
 ---
@@ -689,8 +689,8 @@ airflow standalone
 # Password in: simple_auth_manager_passwords.json.generated
 ```
 
-> **Today**: run `sledgehammer` instead, from any directory, and log in with your LDAP account
-> and TOTP code. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
+> **Today**: run `sledgehammer` instead, from any directory, and log in as yourself with the
+> password in `.sledgehammer/airflow-ui-password.json`. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
 
 ---
 

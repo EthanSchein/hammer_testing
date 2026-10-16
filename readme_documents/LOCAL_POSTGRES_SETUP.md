@@ -157,8 +157,7 @@ sledgehammer db migrate
 `studio init` builds the hammer tables (`pd_artifacts`, `pd_blobs`,
 `pd_blob_chunks`, `pd_cache_events`, `pd_checkpoints`, `pd_checkpoint_chunks`,
 `master_databases`, and the user tables); `sledgehammer db migrate` builds
-Airflow's. Verify with `\dt hammer_poc.*`: ten tables, or eleven once the
-two-factor login or `studio 2fa` has created `user_totp`.
+Airflow's. Verify with `\dt hammer_poc.*`: nine tables.
 
 Both commands read `stack_env.sh` themselves. `sledgehammer db migrate` keeps
 `AIRFLOW_HOME` on the checkout rather than `$DBROOT/airflow`, which is harmless

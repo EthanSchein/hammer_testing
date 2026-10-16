@@ -23,7 +23,7 @@ For a deeper dive into available options and environment configuration:
   * [Workspace setup](readme_documents/WORKSPACE_SETUP.md)
   * [Command reference](readme_documents/CLI_REFERENCE.md), [environment variables](readme_documents/ENVIRONMENT_VARIABLES.md)
   * [Database and cache setup](readme_documents/DATABASE_SETUP.md), [PD store / studio CLI](readme_documents/PD_STORE_README.md)
-  * [Secrets](readme_documents/SECRETS.md), [LDAP login](readme_documents/AIRFLOW_LDAP_SETUP.md), [two-factor auth](readme_documents/AIRFLOW_2FA_SETUP.md)
+  * [Secrets](readme_documents/SECRETS.md)
   * [Sub-step resume and checkpoints](readme_documents/SUBSTEP_RESUME.md), [time-saved tracker](readme_documents/TIME_SAVED_TRACKER.md)
   * [Chipyard integration](readme_documents/setup-sledgehammer-chipyard.md)
 * SledgeHammer documentation (historical, March 2026, kept for reference):

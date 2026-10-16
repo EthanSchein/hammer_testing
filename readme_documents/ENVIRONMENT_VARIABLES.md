@@ -14,8 +14,8 @@ and `""` as off; other text logs a warning and keeps the key's default from
 `hammer/config/defaults.yml`. None of these keys is part of the dependency
 check, so changing one never reruns a stage. Presence flags, marked "Set (any
 value)" below, act whenever they hold anything, `0` included, so unset them to
-turn them off. `HAMMER_CHECKPOINT_STREAM` and `SLEDGE_2FA` follow their own
-rules, given in their rows.
+turn them off. `HAMMER_CHECKPOINT_STREAM` follows its own rules, given in its
+row.
 
 ## Setup
 
@@ -23,12 +23,11 @@ Read by `scripts/uv_setup.sh`.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `SLEDGE_LAB` | unset | Set (any value): the lab profile. Hammer only: no Airflow, Postgres driver, LDAP, dev tools or prompts, and the system python is preferred. `SLEDGE_LAB=0` still selects it |
-| `SLEDGE_NO_LDAP` | unset | Set (any value), default profile: skip python-ldap and the OpenLDAP headers. Airflow's LDAP login will not work |
+| `SLEDGE_LAB` | unset | Set (any value): the lab profile. Hammer only: no Airflow, Postgres driver, dev tools or prompts, and the system python is preferred. `SLEDGE_LAB=0` still selects it |
 | `SLEDGE_NO_PLUGINS` | unset | Set (any value): skip the editable install of the `hammer-*-plugin*` directories next to the checkout |
 | `PYVER` | `3.11` | Python minor version the venv is built with |
 | `SLANG_VERSION` | `11.0` | slang release fetched into `tools/slang/slang`. Leave it: the fingerprint accepts only 11.0 (see below) |
-| `AIRFLOW_VERSION`, `FAB_VERSION`, `EDGE3_VERSION`, `LDAP_VERSION` | `3.1.0`, `3.6.3`, `1.3.0`, `3.4.7` | Versions of Airflow, the fab and edge3 providers, and python-ldap |
+| `AIRFLOW_VERSION`, `EDGE3_VERSION` | `3.1.0`, `1.3.0` | Versions of Airflow and the edge3 provider |
 
 Setup also reads `SLEDGE_SECRETS_FILE` (see the launcher table) to decide
 whether to offer creating the secrets.
@@ -51,28 +50,27 @@ change once.
 
 ## Launcher and login
 
-Read by `sledgehammer`, `scripts/airflow-standalone-ldap.py`, `venv.sh`,
-`webserver_config.py` and the pgAdmin plugin. `studio` reads the stack env file
-too.
+Read by `sledgehammer`, `scripts/airflow-standalone-ldap.py`, `venv.sh` and
+the pgAdmin plugin. `studio` reads the stack env file too.
 
 | Variable | Default | Effect |
 |---|---|---|
 | `SLEDGE_ENV_FILE` | `~/.sledgehammer/env.sh`, then the nearest `stack_env.sh` in or above the current directory | Stack env file that the flow commands (`run`, `status`, `runs` and make-target names), `sledgehammer buildfile` (alias `build`), the Airflow passthrough (such as `sledgehammer dags list` or `db migrate`) and every `studio` command source. Exported values win, and nothing is sourced when `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` and `HAMMER_PG_HOST` are both set. The passthrough sources it before the secrets and keeps `AIRFLOW_HOME` pinned to the checkout even when the file sets another; the flow commands and `buildfile` take `AIRFLOW_HOME` from it, else the checkout. `studio` names the file it read on stderr. Only the launch (`sledgehammer` alone, `standalone`, `up`, `start`, `serve`) and the help skip it. A value that is not a file falls through to the defaults |
 | `SLEDGE_SECRETS_FILE` | `.sledgehammer/airflow-secrets.env.gpg` in the checkout | GPG secrets file the launcher, the passthrough and flow commands, `uv_setup.sh` and the secrets scripts use. Not decrypted when `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` is already set, by you or, for the passthrough and flow commands, by the stack env file. `venv.sh` ignores it and decrypts the default file, so a launch from a terminal uses that file when it exists, unless `SLEDGE_NO_AUTO_SECRETS` is set |
 | `SLEDGE_NO_AUTO_SECRETS` | unset | Set (any value): `source venv.sh` at a terminal no longer decrypts the secrets up front. Its `airflow` function still decrypts on first use |
-| `SLEDGE_2FA` | `1`, set by the launcher | Only `1` turns on the TOTP second factor. Any other value, `0` included, serves plain LDAP. An api-server started any other way gets it only from your environment |
+| `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE` | `.sledgehammer/airflow-ui-password.json` in the checkout | File holding the web UI password. The launch makes you (`$USER`) the UI's only login, adds a random password for you when the file has none, and keeps the file readable only by you. Edit the value to change the password; the next login uses it |
 | `SLEDGE_PORT` | `auto` | `auto` takes the first free port from the `[api] port` (`AIRFLOW__API__PORT`, else `airflow.cfg`, else 8080) up to 19 above it. A number pins the port, and the launch refuses if it is taken |
 | `SLEDGE_DRYRUN` | unset | Set (any value): print the launch command, the Airflow passthrough command or the `make` command `sledgehammer buildfile` would run, instead of running it. `run`, `status`, `runs` and the make-target names ignore it |
 | `SLEDGE_NO_PGADMIN` | unset | Set (any value): do not auto-start pgAdmin |
 | `PGADMIN_PORT` | `5050` | First port the launcher and the nav link's probe try for pgAdmin |
 | `PGADMIN_URL` | unset | Fixed URL for the pgAdmin nav link instead of probing |
 | `SLEDGE_ALLOW_MULTI_SCHEDULER` | unset | Set (any value): skip the warning about another live scheduler on the same metadata DB |
-| `AIRFLOW_ALLOWED_UIDS` | unset | Comma-separated uids that may log in without a `hammer_poc.login_whitelist` row. The OS user who launched the server always may |
 
 A launch, through `sledgehammer` or the script itself, fills in what you left
-unset: `SLEDGE_2FA=1`, `HAMMER_PD_CACHE=1`, and `HAMMER_PG_HOST`,
-`HAMMER_PG_PORT` and `HAMMER_PG_USER` from the Airflow metadata connection. It
-always pins `AIRFLOW_HOME` to the checkout. DAG tasks inherit all of these.
+unset: `HAMMER_PD_CACHE=1`, and `HAMMER_PG_HOST`, `HAMMER_PG_PORT` and
+`HAMMER_PG_USER` from the Airflow metadata connection. It always pins
+`AIRFLOW_HOME` to the checkout and sets `AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS`
+to `$USER:admin`. DAG tasks inherit all of these.
 
 ## PD cache and database
 
@@ -81,12 +79,12 @@ always pins `AIRFLOW_HOME` to the checkout. DAG tasks inherit all of these.
 | `HAMMER_PD_CACHE` | unset (off); `1` under the launcher | Turns the stage cache on. Read in any case, with surrounding spaces ignored: unset, empty, `0`, `false`, `no` or `off` leave it to `vlsi.pd_cache.enabled`. Any other value turns it on and beats the key. The variable alone, not the key, also mirrors `master_database.json` writes to Postgres on DAG runs, and the mirror reads it the same way, so an off value in any spelling stops it too |
 | `HAMMER_PD_CACHE_LEDGER` | on | Records each cache decision in `hammer_poc.pd_cache_events` for `studio time-saved`. `0` turns it off; the per-run summary still prints. Config key `vlsi.pd_cache.ledger_enabled` |
 | `HAMMER_PD_PROJECT` | unset | Project label on ledger rows and database checkpoints. Beats the trigger conf `project`, which beats `vlsi.pd_cache.project` |
-| `HAMMER_PG_HOST` | host of the Airflow conn, else `localhost` | Host of the cache database (`studio`, the cache, checkpoints, login whitelist, 2FA secrets) |
+| `HAMMER_PG_HOST` | host of the Airflow conn, else `localhost` | Host of the cache database (`studio`, the cache, checkpoints) |
 | `HAMMER_PG_PORT` | port of the Airflow conn, else `5433` | Its port |
 | `HAMMER_PG_DB` | `sledgehammer_studio` | Its database. Never taken from the Airflow conn |
 | `HAMMER_PG_USER` | user of the Airflow conn, else your OS user | Its role |
 | `HAMMER_PG_PASSWORD` | password of the Airflow conn | Its password. Without one, libpq's `PGPASSWORD`, then `PGPASSFILE` or `~/.pgpass`; with none of them, connecting fails, and most `studio` commands exit 1 with `studio: database unavailable: No Postgres password found. ...` |
-| `HAMMER_PG_CONNECT_TIMEOUT` | `10` | Seconds each connection to the cache database waits for the server before it gives up, so a cache database that is down cannot hang a `studio` command or a stage. It also bounds the triggering-user lookup in the Airflow metadata DB, but no other connection there, such as `studio admin`'s. A whole number: unset or empty means 10, and `0` waits forever |
+| `HAMMER_PG_CONNECT_TIMEOUT` | `10` | Seconds each connection to the cache database waits for the server before it gives up, so a cache database that is down cannot hang a `studio` command or a stage. It also bounds the triggering-user lookup in the Airflow metadata DB. A whole number: unset or empty means 10, and `0` waits forever |
 | `SLEDGE_EXTRA_METADATA_CONNS` | unset | Comma-separated Postgres URIs of other Airflow metadata DBs. `studio time-saved` adds their runs when it measures parallel savings and failed-run time |
 
 "The Airflow conn" is `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN`, else
@@ -190,11 +188,6 @@ that is unset, and when it places the run it sets `OBJ_DIR` and clears
 |---|---|---|
 | `HAMMER_CHECKPOINT_DEBUG` | unset | Set (any value): print the traceback when a checkpoint push or clear fails, which is otherwise silent |
 | `HAMMER_PD_COLLAT_DEBUG` | unset | File path. Every collateral fingerprint appends the `path:size:mtime` lines it hashed |
-| `SLEDGE_2FA_TEST_PORT` | `8082` | Port of `scripts/airflow-2fa-testserver.py` |
-| `SLEDGE_2FA_DB` | `auth2fa/demo_2fa.sqlite` | SQLite file of the 2FA demo's store |
-| `SLEDGE_2FA_DEMO_LDAP` | unset | Only `1` makes the 2FA demo check passwords against LDAP (`AUTH_LDAP_SERVER`, `AUTH_LDAP_SEARCH`); otherwise any non-empty password passes |
-| `SLEDGE_2FA_DEMO_SECRET` | random per start | Flask session key of the 2FA demo |
-| `SLEDGE_2FA_STORE` | `sqlite` | No effect today: every caller names its backend |
 
 ## Other tools
 

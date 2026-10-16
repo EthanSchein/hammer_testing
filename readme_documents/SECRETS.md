@@ -4,19 +4,19 @@ The Airflow secrets are kept out of git. `airflow.cfg` is committed with its
 secret fields blank, and the real values live in a GPG-encrypted file in your
 checkout's gitignored `.sledgehammer/` directory that gets loaded into the environment at launch.
 
-This only concerns you if you *run* an Airflow instance. If you just log into
-someone else's running instance through the web UI, you need none of this. Use
-your EECS LDAP credentials and an authenticator code (2FA is on by default)
-and you're done.
-
-The one exception is running `studio` against the cache DB directly, which
-needs your own Postgres password. Put it in `HAMMER_PG_PASSWORD`, or in a line
-of `~/.pgpass` (or of the file `$PGPASSFILE` names):
+This only concerns you if you *run* an Airflow instance. Running `studio`
+against the cache DB directly needs only your own Postgres password. Put it in
+`HAMMER_PG_PASSWORD`, or in a line of `~/.pgpass` (or of the file `$PGPASSFILE`
+names):
 
     <host>:<port>:sledgehammer_studio:<uid>:<password>
 
 Then run `chmod 600 ~/.pgpass`: libpq ignores a pgpass file that others can
 read.
+
+The web UI password is not one of these secrets. The launch keeps it in
+`.sledgehammer/airflow-ui-password.json`, readable only by you; see
+[CLI_REFERENCE.md](CLI_REFERENCE.md#stack-and-passthrough).
 
 ## How it works
 

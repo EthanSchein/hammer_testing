@@ -1,5 +1,5 @@
 > **DEPRECATED (Airflow 2.x / Poetry era).** This guide describes the pre-SledgeHammer
-> setup and no longer matches the code (now uv, Python 3.11, Airflow 3.1, LDAP + 2FA).
+> setup and no longer matches the code (now uv, Python 3.11, Airflow 3.1).
 > Current documentation lives in [readme_documents/](../../readme_documents/), starting
 > with [WORKSPACE_SETUP.md](../../readme_documents/WORKSPACE_SETUP.md).
 

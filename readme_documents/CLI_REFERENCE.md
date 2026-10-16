@@ -27,12 +27,11 @@ From a fresh clone, one command builds the environment:
 ./scripts/uv_setup.sh
 ```
 
-It neutralizes conda/mamba/any active venv first (psycopg2 and python-ldap
-compile from source, and a foreign OpenSSL on the linker path gets baked in as
-an RPATH that breaks them in every later shell), creates the venv, runs
-`uv sync --group dev`, then installs Airflow, asyncpg and the edge3 provider
-against the official constraint file, the fab provider on top with SQLAlchemy
-held to 2.0.x, and builds psycopg2 and python-ldap with `--no-binary`.
+It neutralizes conda/mamba/any active venv first (psycopg2 compiles from
+source, and a foreign OpenSSL on the linker path gets baked in as an RPATH that
+breaks it in every later shell), creates the venv, runs `uv sync --group dev`,
+then installs Airflow, asyncpg and the edge3 provider against the official
+constraint file, and builds psycopg2 with `--no-binary`.
 
 It also links `sledgehammer` into `~/.local/bin`. Open a new shell and it runs
 from any directory, inside a Chipyard tree or not, with nothing sourced.
@@ -331,9 +330,8 @@ commands refuse to run it against the other build's obj_dir (see
 ### Stack and passthrough
 
 ```bash
-sledgehammer                  # launch with LDAP + TOTP (sets SLEDGE_2FA=1)
+sledgehammer                  # launch the stack
 sledgehammer standalone       # same
-SLEDGE_2FA=0 sledgehammer     # plain LDAP, no second factor
 sledgehammer db migrate       # any airflow subcommand, stack env file and secrets loaded
 sledgehammer dags list
 SLEDGE_DRYRUN=1 sledgehammer  # print what it would run
@@ -356,6 +354,13 @@ so nothing has to be exported by hand. What each one loads:
   set, defaulting to the checkout. So they compose with an existing stack.
 - `buildfile` treats the environment file and `AIRFLOW_HOME` the same way as
   the flow commands, but loads no secrets.
+
+The web UI has one login: you, under your OS user name (`$USER`). The launch
+keeps your password in `.sledgehammer/airflow-ui-password.json` in the checkout, readable only by you,
+and makes up a random one the first time. It prints where the file is, never
+the password. To choose your own, edit the value in that file; the next login
+uses it, with no restart. The UI listens on 127.0.0.1 only, so from another
+machine use the SSH tunnel command the launch prints.
 
 ## studio
 
@@ -444,7 +449,7 @@ turns streaming off.
 
 ### Users and access
 
-`onboard` `grant` `revoke` `whitelist` `2fa` `admin`
+`onboard` `grant` `revoke`
 
 ### Workspaces
 
@@ -526,9 +531,7 @@ studio reap            # list EDA processes left by dead runs (--kill to end the
 
 Setup lives in its own files: [DATABASE_SETUP.md](DATABASE_SETUP.md) (an
 existing Postgres), [LOCAL_POSTGRES_SETUP.md](LOCAL_POSTGRES_SETUP.md)
-(standing one up), [WORKSPACE_SETUP.md](WORKSPACE_SETUP.md),
-[AIRFLOW_LDAP_SETUP.md](AIRFLOW_LDAP_SETUP.md),
-[AIRFLOW_2FA_SETUP.md](AIRFLOW_2FA_SETUP.md), [SECRETS.md](SECRETS.md),
+(standing one up), [WORKSPACE_SETUP.md](WORKSPACE_SETUP.md), [SECRETS.md](SECRETS.md),
 [TIME_SAVED_TRACKER.md](TIME_SAVED_TRACKER.md),
 [SUBSTEP_RESUME.md](SUBSTEP_RESUME.md).
 

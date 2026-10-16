@@ -88,7 +88,7 @@ cd ../..
 
 `uv_setup.sh` installs uv, sets up the local libraries for the source builds (see the
 psycopg2 note), creates the uv venv at Python 3.11, installs hammer editable, then Airflow
-3.1.0 plus fab 3.6.3 plus python-ldap plus the real psycopg2, links `sledgehammer` into
+3.1.0 plus the real psycopg2, links `sledgehammer` into
 `~/.local/bin`, and prompts to create the encrypted Postgres secrets.
 
 ### 4. techname plugin, into the uv venv (replaces the course's `pip install -e .`)
@@ -179,7 +179,7 @@ and you have no root, so `pip install psycopg2` fails with "pg_config executable
 `uv pip install` would fail the same way. `uv_setup.sh` fixes it without root: it runs
 `dnf download` on the `libpq-devel` and `libpq` RPMs, extracts them with `rpm2cpio | cpio`
 into `~/pg_local`, and puts `pg_config` on PATH. The same pattern provides `libnsl` (Cadence
-on RHEL 9) and `openldap-devel` (python-ldap). Let `uv_setup.sh` handle it. Don't fall back
+on RHEL 9). Let `uv_setup.sh` handle it. Don't fall back
 to `psycopg2-binary`, whose bundled libpq/libssl clashes with the system's.
 
 By-hand ordering, if you ever need it: `uv sync` does not install psycopg2 and removes
@@ -261,5 +261,5 @@ step 5.
 ---
 
 **Environments:** Chipyard conda Python 3.10.14, SledgeHammer uv venv Python 3.11.15,
-Airflow 3.1.0 plus providers-fab 3.6.3, uv 0.11.x.
-**Updated:** 2026-10-03.
+Airflow 3.1.0, uv 0.11.x.
+**Updated:** 2026-10-13.

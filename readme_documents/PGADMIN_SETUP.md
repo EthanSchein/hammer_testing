@@ -14,8 +14,8 @@ you're on your own machine with normal write access, skip it.
   whatever, as long as you can write to `<env>/lib/.../site-packages/`.
 - A host that can reach your Postgres server. For BWRC users, this is
   `bwrcix-3` reaching `barney`.
-- Your Postgres role + password. The cache uses Postgres role auth (not
-  LDAP), so the password is the one provisioned for your role, not your
+- Your Postgres role + password. The cache uses Postgres role auth, so the
+  password is the one provisioned for your role, not your
   EECS password. If you've run Airflow against the cache, this password is
   the `HAMMER_PG_PASSWORD` in your encrypted secrets file
   (`.sledgehammer/airflow-secrets.env.gpg`, see [SECRETS.md](SECRETS.md)).
@@ -177,13 +177,12 @@ around across pgAdmin restarts (the registration lives in
 Expand the tree: `Servers` → `SledgeHammer cache` → `Databases` →
 `sledgehammer_studio` → `Schemas` → `hammer_poc` → `Tables`.
 
-Ten tables, or eleven once the two-factor login or `studio 2fa` has created
-`user_totp`. The cache itself is `pd_blobs` (stage tarballs, with oversized
+Nine tables. The cache itself is `pd_blobs` (stage tarballs, with oversized
 ones split into `pd_blob_chunks`), `master_databases`, and `pd_artifacts`
 (par-input JSON plus the `master_databases` write history). The rest are
 `pd_checkpoints` and `pd_checkpoint_chunks` (sub-step resume),
-`pd_cache_events` (the time-saved ledger), `user_workspaces`,
-`login_whitelist` and `user_notify_email`.
+`pd_cache_events` (the time-saved ledger), `user_workspaces` and
+`user_notify_email`.
 
 Right-click any table → **View/Edit Data** → **All Rows** → grid pops up.
 

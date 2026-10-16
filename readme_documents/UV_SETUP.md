@@ -150,7 +150,7 @@ mkdir -p /bwrcq/C/<username>
 cd /bwrcq/C/<username>
 ```
 
-**Note**: Replace `<username>` with your actual LDAP username. Your home directory may be at `/bwrcq/home/<username>` or `/bwrcq/C/<username>`.
+**Note**: Replace `<username>` with your actual EECS username. Your home directory may be at `/bwrcq/home/<username>` or `/bwrcq/C/<username>`.
 
 ### Step 0.5: Clone Hammer Repository
 
@@ -396,7 +396,7 @@ python3 -c "import psycopg2; print('psycopg2:', psycopg2.__version__)"
 # Should show: psycopg2: 2.9.11 (dt dec pq3 ext lo64)
 ```
 
-> **Today**: `./scripts/uv_setup.sh` also installs `asyncpg`, the FAB provider (the tracked `airflow.cfg` uses its auth manager for the LDAP login), the edge3 provider and `python-ldap`, so the packages above are no longer enough on their own.
+> **Today**: `./scripts/uv_setup.sh` also installs `asyncpg` and the edge3 provider, so the packages above are no longer enough on their own.
 
 ### Step 4: Set Up PostgreSQL Connection
 
@@ -431,7 +431,7 @@ sql_alchemy_max_overflow = 20
 sql_alchemy_engine_args = {"pool_pre_ping": true}
 ```
 
-Replace `<username>` with your LDAP username and `YOUR_PASSWORD` with your actual PostgreSQL password.
+Replace `<username>` with your EECS username and `YOUR_PASSWORD` with your actual PostgreSQL password.
 
 > **Today**: `airflow.cfg` is tracked in git and ships with `sql_alchemy_conn` blank, so do not put your password in it. `./scripts/uv_setup.sh` (or `./scripts/sledge-secrets-create.sh`) stores the connection string in a GPG-encrypted file under `.sledgehammer/`. Run the check below as `sledgehammer db check`, which loads it first. See [SECRETS.md](SECRETS.md).
 
@@ -518,7 +518,7 @@ export AIRFLOW_HOME=$(pwd)
 airflow standalone
 ```
 
-> **Today**: run `sledgehammer` instead, from any directory (`./scripts/uv_setup.sh` puts it on your `PATH`). It sources `venv.sh` in the checkout, decrypts your secrets and starts the stack with the EECS LDAP login and a TOTP second factor, so there is no generated admin password: you log in with your LDAP credentials and an authenticator code. When the stack is ready it prints the web UI URL and an SSH tunnel command. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
+> **Today**: run `sledgehammer` instead, from any directory (`./scripts/uv_setup.sh` puts it on your `PATH`). It sources `venv.sh` in the checkout, decrypts your secrets and starts the stack. You log in as yourself (your OS user name), with the password the launch keeps in `.sledgehammer/airflow-ui-password.json`. When the stack is ready it prints the web UI URL and an SSH tunnel command. See [CLI_REFERENCE.md](CLI_REFERENCE.md).
 
 Wait for `Airflow is ready`. The auto-generated admin password is in `simple_auth_manager_passwords.json.generated`.
 
@@ -557,7 +557,7 @@ ssh -A -L 8080:localhost:8080 -J <username>@bwrcrdsl-1.eecs.berkeley.edu <userna
 ```
 Then open http://localhost:8080 in your browser.
 
-> **Today**: `sledgehammer` serves on the `[api] port` from `airflow.cfg` (8081 in the tracked file), or the next free port if that one is busy, and prints the URL and the tunnel command to use. You log in with your LDAP credentials and an authenticator code, not as `admin`.
+> **Today**: `sledgehammer` serves on the `[api] port` from `airflow.cfg` (8081 in the tracked file), or the next free port if that one is busy, and prints the URL and the tunnel command to use. You log in as yourself, not as `admin`, with the password in `.sledgehammer/airflow-ui-password.json`.
 
 ---
 
@@ -988,7 +988,7 @@ airflow standalone
 # Check password in: simple_auth_manager_passwords.json.generated
 ```
 
-> **Today**: run `sledgehammer` instead of all three steps, and log in with your LDAP credentials and an authenticator code (see [Step 7](#step-7-start-airflow)).
+> **Today**: run `sledgehammer` instead of all three steps, and log in as yourself with the password in `.sledgehammer/airflow-ui-password.json` (see [Step 7](#step-7-start-airflow)).
 
 ---
 
@@ -1294,7 +1294,7 @@ hammer/                               # AIRFLOW_HOME
 ├── chipyard/                         # Chipyard repository (cloned in Step 8)
 ├── dags/                             # Links to generated DAGs (today)
 ├── logs/                             # Airflow task logs
-├── simple_auth_manager_passwords...  # Auto-generated admin password (none with today's LDAP login)
+├── simple_auth_manager_passwords...  # Auto-generated admin password (today in .sledgehammer/airflow-ui-password.json)
 ├── hammer/                           # Hammer Python package
 │   ├── shell/
 │   │   └── hammer_vlsi.py            # ★ hammer-vlsi entry point, helpers for generated DAGs

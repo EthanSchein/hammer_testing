@@ -70,13 +70,11 @@ hasn't been removed, but the real caching path is `master_databases` +
 on Row Level Security later (for the per row "hash not found" semantics
 Andre asked about) is a one line policy change.
 
-The other seven: `pd_blob_chunks` holds `pd_blobs` tarballs too big for one
+The other six: `pd_blob_chunks` holds `pd_blobs` tarballs too big for one
 `bytea` value, `pd_checkpoints` and `pd_checkpoint_chunks` hold sub-step
 checkpoints, `pd_cache_events` is the time-saved ledger, `user_workspaces`
-maps each user's named workspaces to a root directory, `login_whitelist` is
-the login allow list, and `user_notify_email` holds flow-completion email
-addresses. When the login uses 2FA, `auth2fa/store.py` adds an eleventh table
-to the schema, `user_totp`.
+maps each user's named workspaces to a root directory, and `user_notify_email`
+holds flow-completion email addresses.
 
 ## CLI
 
@@ -286,9 +284,7 @@ sequence, now or later (the DDL uses `ALTER DEFAULT PRIVILEGES` for both, so
 new tables and sequences the schema owner adds under `hammer_poc` pick up the
 same grants). The sequence grants are what let members add rows to
 `pd_cache_events` (the time-saved ledger) and `pd_checkpoints`, whose ids come
-from sequences. The one table they cannot write is `login_whitelist`: members
-only get `SELECT` there, so only the table owner can change who can log in.
-Onboarding a user is one line:
+from sequences. Onboarding a user is one line:
 
 ```bash
 studio grant colin
@@ -297,8 +293,7 @@ studio grant colin
 That runs `GRANT sledgehammer_users TO colin`. If the cluster has no
 `sledgehammer_users` role, `grant` gives `colin` the same table and sequence
 grants directly instead. `studio onboard colin` always grants directly, and also
-creates the `airflow_colin` metadata database and adds `colin` to the login
-whitelist (skip that with `--no-whitelist`). Offboarding is:
+creates the `airflow_colin` metadata database. Offboarding is:
 
 ```bash
 studio revoke colin
