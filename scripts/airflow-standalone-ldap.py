@@ -445,6 +445,12 @@ def _login_line() -> str:
             f"{os.environ['AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE']} (edit that file to change it).")
 
 
+def _tunnel_line(forwards: str) -> str:
+    """The ssh command that brings the UI to a laptop; SLEDGE_SSH_HOST names the host users ssh to."""
+    target = os.environ.get("SLEDGE_SSH_HOST", "").strip() or "<the host you ssh to>"
+    return f"Tunnel from your laptop: ssh {forwards} {target}"
+
+
 def _lite() -> bool:
     """True for the single-user lite stack (`sledgehammer lite` or SLEDGE_LITE=1)."""
     return os.environ.get("SLEDGE_LITE", "").strip().lower() not in ("", "0", "false", "no", "off")
@@ -496,7 +502,6 @@ class HammerStandalone(StandaloneCommand):
         # web UI + pgAdmin addresses and a tunnel command so it's not a guessing game.
         super().print_ready()
         host = socket.getfqdn()
-        user = os.environ.get("USER", "<you>")
         # Same source Airflow's own --port default uses, so it tracks airflow.cfg + env.
         try:
             from airflow.configuration import conf
@@ -515,7 +520,7 @@ class HammerStandalone(StandaloneCommand):
         if pg_url:
             self.print_output("standalone", f"pgAdmin : {pg_url}")
         fwd = f"-L {api_port}:localhost:{api_port}" + (f" -L {pg_port}:localhost:{pg_port}" if pg_port else "")
-        self.print_output("standalone", f"Tunnel from your laptop: ssh {fwd} {user}@{host}")
+        self.print_output("standalone", _tunnel_line(fwd))
 
 
 def _effective_api_port() -> int:
@@ -711,7 +716,7 @@ def _lite_main():
     print("[lite] starting the scheduler, dag-processor and api-server (no triggerer, log server or pgAdmin)")
     print(f"[lite] Web UI  : http://localhost:{port}   (running on {host})")
     print(f"[lite] {_login_line()}")
-    print(f"[lite] Tunnel from your laptop: ssh -L {port}:localhost:{port} {os.environ.get('USER', '<you>')}@{host}")
+    print(f"[lite] {_tunnel_line(f'-L {port}:localhost:{port}')}")
     sys.stdout.flush()
     sys.stderr.flush()
     os.execvp("bash", ["bash", LITE_SUPERVISOR])
