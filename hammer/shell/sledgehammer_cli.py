@@ -152,8 +152,26 @@ def _airflow(*a, capture=True):
     return r.returncode, (r.stdout or ""), (r.stderr or "")
 
 
+# Polls in a row, 30s apart, that may fail before `sledgehammer run` stops watching.
+_WATCH_TRIES = 10
+
+
+class _AirflowFailed(Exception):
+    """An airflow command exited nonzero; the message is the line of its output that names the error."""
+
+
+def _airflow_error(rc, out, err):
+    import re
+    lines = [l.strip() for l in (err or out).splitlines() if l.strip()]
+    named = [l for l in lines if re.search(r"[\w.]+(Error|Exception)\b|\bERROR\b", l)]
+    return (named or lines or [f"airflow exited with status {rc}"])[-1][:300]
+
+
 def _run_state(dag_id, run_id):
-    _, out, _ = _airflow("dags", "list-runs", dag_id, "-o", "plain")
+    """The run's state, or None when airflow does not list it; raises _AirflowFailed when airflow fails."""
+    rc, out, err = _airflow("dags", "list-runs", dag_id, "-o", "plain")
+    if rc != 0:
+        raise _AirflowFailed(_airflow_error(rc, out, err))
     for line in out.splitlines():
         parts = line.split()
         if len(parts) >= 3 and parts[1] == run_id:
@@ -497,6 +515,7 @@ def _cmd_run(args) -> int:
 
     print("[sledgehammer] streaming (Ctrl-C detaches; the run keeps going)")
     last = {}
+    misses = 0
     try:
         while True:
             for t, s in sorted(_task_states(dag_id, run_id).items()):
@@ -506,10 +525,22 @@ def _cmd_run(args) -> int:
                     print(f"  [{time.strftime('%H:%M')}] "
                           f"{t.replace('module_', ''):42s} {s}")
                 last[t] = s
-            state = _run_state(dag_id, run_id)
+            try:
+                state = _run_state(dag_id, run_id)
+                problem = "" if state else f"airflow does not list run {run_id}"
+            except _AirflowFailed as e:
+                state, problem = None, f"airflow could not list the runs: {e}"
             if state in ("success", "failed"):
                 print(f"[sledgehammer] run {run_id}: {state.upper()}")
                 return 0 if state == "success" else 1
+            misses = misses + 1 if problem else 0
+            if misses == 1:
+                print(f"[sledgehammer] {problem}; trying again every 30s")
+            if misses >= _WATCH_TRIES:
+                print(f"[sledgehammer] stopped watching run {run_id} after {misses} tries in a row: {problem}\n"
+                      f"  The run may still be going; check later with: sledgehammer status --design {design}",
+                      file=sys.stderr)
+                return 1
             time.sleep(30)
     except KeyboardInterrupt:
         print(f"\n[sledgehammer] detached; check later with: "
