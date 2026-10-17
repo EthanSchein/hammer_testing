@@ -134,12 +134,8 @@ FQ_CHECKPOINT = f"{SCHEMA_NAME}.{CHECKPOINT_TABLE}"
 BLOB_CHUNK_TABLE = "pd_blob_chunks"
 FQ_BLOB_CHUNK = f"{SCHEMA_NAME}.{BLOB_CHUNK_TABLE}"
 
-# Split blobs bigger than this across pd_blob_chunks rows. Postgres refuses
-# any single allocation over 1 GiB, and processing a bytea parameter can
-# roughly double its footprint server-side, so one ~500 MB tarball already
-# fails to insert (a Rocket syn rundir tars to that). 128 MiB per value
-# stays far from the cliff.
-BLOB_CHUNK_BYTES = 128 * 1024 * 1024
+# Blobs and checkpoints past this size go to chunk rows of this size, bounding the server memory one statement needs.
+BLOB_CHUNK_BYTES = 8 * 1024 * 1024
 
 # Checkpoints still use a single bytea value; past this compressed size the
 # insert would die at the same 1 GiB wall, so store_checkpoint refuses with
@@ -1851,13 +1847,11 @@ def store_stage_blob(
     produced each row. They default to None when the caller doesn't have
     them, in which case any existing value on UPDATE is preserved.
 
-    Blobs above BLOB_CHUNK_BYTES don't fit in one bytea value (Postgres
-    caps single allocations at 1 GiB), so they're split across
-    pd_blob_chunks rows in the same transaction; the parent row keeps the
-    metadata with an empty data column and load_stage_blob reassembles.
+    Blobs above BLOB_CHUNK_BYTES are split across pd_blob_chunks rows in the
+    same transaction; the parent row keeps the metadata with an empty data
+    column and load_stage_blob reassembles.
     """
-    chunks = [data[i:i + BLOB_CHUNK_BYTES]
-              for i in range(0, len(data), BLOB_CHUNK_BYTES)]
+    chunks = _chunks(data)
     inline = data if len(chunks) <= 1 else b""
     conn = _connect()
     try:
@@ -1912,6 +1906,22 @@ def store_stage_blob(
         conn.close()
 
 
+def _chunks(data: bytes) -> List[memoryview]:
+    view = memoryview(data)
+    return [view[i:i + BLOB_CHUNK_BYTES] for i in range(0, len(view), BLOB_CHUNK_BYTES)]
+
+
+def _read_chunks(conn: Any, sql: str, params: Tuple[Any, ...]) -> bytearray:
+    """Join a chunk query's rows in order, fetching them one at a time through a server-side cursor."""
+    out = bytearray()
+    with conn.cursor(name="pd_chunk_reader") as cur:
+        cur.itersize = 1
+        cur.execute(sql, params)
+        for (piece,) in cur:
+            out += piece
+    return out
+
+
 def stage_blob_runtime(sha256: str) -> Optional[Tuple[Optional[float], Optional[float]]]:
     """(duration_seconds, cpu_seconds) of a stored blob without fetching its bytes, or None if absent."""
     conn = _connect()
@@ -1940,32 +1950,28 @@ def load_stage_blob(
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT stage, data, duration_seconds, cpu_seconds "
+                f"SELECT stage, data, duration_seconds, cpu_seconds, size_bytes "
                 f"FROM {FQ_BLOB} WHERE sha256 = %s",
                 (sha256,),
             )
             row = cur.fetchone()
-            chunk_rows = []
-            if row is not None and (row[1] is None or len(row[1]) == 0):
-                # An empty data column means the tarball was too big for one
-                # bytea value and lives in pd_blob_chunks (see store side).
-                try:
-                    cur.execute(
-                        f"SELECT data FROM {FQ_BLOB_CHUNK} "
-                        f"WHERE sha256 = %s ORDER BY seq",
-                        (sha256,),
-                    )
-                    chunk_rows = cur.fetchall()
-                except psycopg2.Error:
-                    conn.rollback()
+        chunked = bytearray()
+        if row is not None and (row[1] is None or len(row[1]) == 0):
+            # An empty data column means the tarball lives in pd_blob_chunks (see store side).
+            try:
+                chunked = _read_chunks(conn, f"SELECT data FROM {FQ_BLOB_CHUNK} WHERE sha256 = %s ORDER BY seq",
+                                       (sha256,))
+            except psycopg2.Error:
+                conn.rollback()
     finally:
         conn.close()
     if row is None:
         return None
-    stage, data, duration_seconds, cpu_seconds = row
-    blob = bytes(data) if data is not None else b""
-    if not blob and chunk_rows:
-        blob = b"".join(bytes(c[0]) for c in chunk_rows)
+    stage, data, duration_seconds, cpu_seconds, size_bytes = row
+    blob = bytes(data) if data is not None and len(data) else chunked
+    # Chunks deleted between the two reads, or a read cut short, make a miss rather than a broken tarball.
+    if size_bytes is not None and len(blob) != size_bytes:
+        return None
     return stage, blob, duration_seconds, cpu_seconds
 
 
@@ -2250,11 +2256,9 @@ def store_checkpoint(stage_key: str, stage: str, step: str, path: Path,
             f"checkpoint tarball is {len(data) / 1e6:.0f} MB compressed, past "
             f"the {CHECKPOINT_MAX_BYTES // (1024 * 1024)} MB sanity ceiling; "
             "keeping the local checkpoint only")
-    # Same overflow scheme as stage blobs: one bytea can't hold rocket-scale
-    # innovus checkpoints, so anything past a chunk goes to
+    # Same overflow scheme as stage blobs: anything past a chunk goes to
     # pd_checkpoint_chunks and the parent row keeps empty data.
-    chunks = [data[i:i + BLOB_CHUNK_BYTES]
-              for i in range(0, len(data), BLOB_CHUNK_BYTES)]
+    chunks = _chunks(data)
     inline = data if len(chunks) <= 1 else b""
     cols = ("triggering_user", "dag_id", "dag_run_id", "workspace",
             "design", "module", "project")
@@ -2347,11 +2351,9 @@ def fetch_checkpoint(stage_key: Optional[str] = None, step: Optional[str] = None
             # An empty data column on a non-empty checkpoint means the payload
             # overflowed into pd_checkpoint_chunks; reassemble by seq.
             if not rec["data"] and rec.get("size_bytes"):
-                cur.execute(
-                    f"SELECT data FROM {FQ_CHECKPOINT_CHUNK} "
-                    f"WHERE stage_key = %s AND step = %s ORDER BY seq",
+                rec["data"] = _read_chunks(
+                    conn, f"SELECT data FROM {FQ_CHECKPOINT_CHUNK} WHERE stage_key = %s AND step = %s ORDER BY seq",
                     (rec["stage_key"], rec["step"]))
-                rec["data"] = b"".join(bytes(r[0]) for r in cur.fetchall())
                 if len(rec["data"]) != rec["size_bytes"]:
                     raise RuntimeError(
                         f"checkpoint {rec['stage_key'][:16]}.../{rec['step']} "
