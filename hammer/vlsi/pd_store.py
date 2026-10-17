@@ -97,6 +97,9 @@ __all__ = [
     "find_blobs",
     "count_blobs",
     "delete_blobs",
+    "prune_stage_blobs",
+    "prunable_stage_blobs",
+    "delete_listed_blobs",
     "reassign_blobs",
     "tar_directory",
     "untar_to_directory",
@@ -707,6 +710,8 @@ ALTER TABLE {FQ_BLOB}   ADD COLUMN IF NOT EXISTS dag_id          TEXT;
 ALTER TABLE {FQ_BLOB}   ADD COLUMN IF NOT EXISTS dag_run_id      TEXT;
 ALTER TABLE {FQ_BLOB}   ADD COLUMN IF NOT EXISTS workspace       TEXT;
 ALTER TABLE {FQ_BLOB}   ADD COLUMN IF NOT EXISTS design          TEXT;
+-- The block the result is for (the stage's top_module), so retention keeps each module's newest results.
+ALTER TABLE {FQ_BLOB}   ADD COLUMN IF NOT EXISTS module          TEXT;
 
 ALTER TABLE {FQ_TABLE}  ADD COLUMN IF NOT EXISTS owner           TEXT NOT NULL DEFAULT current_user;
 ALTER TABLE {FQ_TABLE}  ADD COLUMN IF NOT EXISTS triggering_user TEXT;
@@ -1455,6 +1460,57 @@ def delete_blobs(**filters: Any) -> int:
         conn.close()
 
 
+def prunable_stage_blobs(keep: int, stage: Optional[str] = None) -> List[Tuple[Any, ...]]:
+    """
+    The pd_blobs rows older than the newest ``keep`` of their (stage, design, module, owner), of one stage when
+    ``stage`` is given, oldest first, shaped like find_blobs. Rows stored without a module group per stage, design
+    and owner.
+    """
+    if keep < 1:
+        raise ValueError(f"keep must be at least 1, got {keep}")
+    where, params = (" WHERE stage = %s", [stage]) if stage else ("", [])
+    conn = _connect()
+    try:
+        _ensure_schema(conn, quiet=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT {_BLOB_LIST_COLS} FROM (SELECT {_BLOB_LIST_COLS}, row_number() OVER "
+                f"(PARTITION BY stage, design, module, owner ORDER BY created_at DESC, sha256) AS newest "
+                f"FROM {FQ_BLOB}{where}) ranked WHERE newest > %s ORDER BY created_at, sha256",
+                params + [keep])
+            return list(cur.fetchall())
+    finally:
+        conn.close()
+
+
+def prune_stage_blobs(keep: int, stage: Optional[str] = None, dry_run: bool = False) -> List[Tuple[Any, ...]]:
+    """Delete prunable_stage_blobs(keep, stage); return the rows deleted (with ``dry_run``, the rows that would be)."""
+    rows = prunable_stage_blobs(keep, stage)
+    return rows if dry_run else delete_listed_blobs(rows)
+
+
+def delete_listed_blobs(rows: List[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
+    """
+    Delete these find_blobs-shaped rows and return the ones deleted.
+
+    Each row goes with its chunks in a transaction of its own and only while its created_at is still the one listed,
+    so a store that rewrites the same entry meanwhile keeps it, and other uploads never wait on a long delete.
+    """
+    conn = _connect()
+    try:
+        deleted = []
+        for row in rows:
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {FQ_BLOB} WHERE sha256 = %s AND created_at = %s", (row[0], row[-1]))
+                if cur.rowcount:
+                    cur.execute(f"DELETE FROM {FQ_BLOB_CHUNK} WHERE sha256 = %s", (row[0],))
+                    deleted.append(row)
+            conn.commit()
+        return deleted
+    finally:
+        conn.close()
+
+
 def reassign_blobs(
     *,
     set_owner: Optional[str] = None,
@@ -1880,6 +1936,7 @@ def store_stage_blob(
     dag_run_id: Optional[str] = None,
     workspace: Optional[str] = None,
     design: Optional[str] = None,
+    module: Optional[str] = None,
 ) -> None:
     """
     Store a tarball under ``sha256``. Latest write wins.
@@ -1951,6 +2008,14 @@ def store_stage_blob(
                         f"VALUES (%s, %s, %s)",
                         (sha256, seq, psycopg2.Binary(chunk)),
                     )
+            if module is not None:
+                # A server whose owner has not added the module column yet still takes the blob, unlabelled.
+                cur.execute("SAVEPOINT pd_blob_module")
+                try:
+                    cur.execute(f"UPDATE {FQ_BLOB} SET module = %s WHERE sha256 = %s", (module, sha256))
+                    cur.execute("RELEASE SAVEPOINT pd_blob_module")
+                except psycopg2.Error:
+                    cur.execute("ROLLBACK TO SAVEPOINT pd_blob_module")
         conn.commit()
     finally:
         conn.close()

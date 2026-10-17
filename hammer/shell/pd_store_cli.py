@@ -27,6 +27,8 @@ user's build dir):
 
 Cache wipes (destructive; default behavior prompts for confirmation):
     wipe-blobs     [--stage <tag>]   Delete stage tarballs. Forces cold run.
+    blob-prune --keep K [--stage <tag>] [--dry-run]
+                                     Keep only the newest K tarballs of each stage, design, module and owner.
     wipe-master    [--design <name>] Delete dep-check baseline.
     wipe-artifacts [--kind <kind>]   Delete JSON artifacts (par-input, etc.).
     wipe-all                         Delete all cache. user_workspaces is kept.
@@ -640,6 +642,41 @@ def _cmd_blob_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_blob_prune(args: argparse.Namespace) -> int:
+    try:
+        rows = pd_store.prunable_stage_blobs(args.keep, stage=args.stage)
+    except Exception as e:
+        if getattr(e, "pgcode", None) != "42703":
+            raise
+        print("studio: the cache tables have no module column yet, so blob-prune cannot tell modules apart; their "
+              "owner adds it by running `studio init` with this version.", file=sys.stderr)
+        return 1
+    if not rows:
+        print(f"(no stage, design, module and owner has more than {args.keep} blob(s); nothing to prune)")
+        return 0
+    total = sum(r[2] or 0 for r in rows)
+    print(f"{len(rows)} blob(s), {_human_bytes(total)}, are older than the newest {args.keep} "
+          f"of their stage, design, module and owner:")
+    _print_blob_rows(rows[:10])
+    if len(rows) > 10:
+        print(f"  ... and {len(rows) - 10} more")
+    if args.dry_run:
+        print(f"\n[dry-run] would delete {len(rows)} blob(s). Re-run without --dry-run to apply.")
+        return 0
+    if not _confirm(f"Permanently delete {len(rows)} blob(s) ({_human_bytes(total)})?", args.yes):
+        print("Aborted.")
+        return 1
+    deleted = pd_store.delete_listed_blobs(rows)
+    print(f"Deleted {len(deleted)} blob(s), {_human_bytes(sum(r[2] or 0 for r in deleted))}.")
+    return 0
+
+
+def _positive_int(value: str) -> int:
+    if not value.isdigit() or int(value) < 1:
+        raise argparse.ArgumentTypeError(f"expected a whole number of at least 1, got {value!r}")
+    return int(value)
+
+
 def _cmd_blob_reassign(args: argparse.Namespace) -> int:
     kw = _blob_filter_kwargs(args)
     sets = {
@@ -1219,6 +1256,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bdel.add_argument("--yes", action="store_true",
                         help="Skip the confirmation prompt.")
     p_bdel.set_defaults(func=_cmd_blob_delete)
+
+    p_bprune = sub.add_parser(
+        "blob-prune",
+        help="Keep only the newest K stage blobs of each stage, design, module and owner and delete the rest. "
+             "Safe while others upload; prompts unless --yes.",
+    )
+    p_bprune.add_argument("--keep", type=_positive_int, required=True, metavar="K",
+                          help="Blobs to keep per stage, design, module and owner, newest first.")
+    p_bprune.add_argument("--stage", help="Only prune this stage tag (synthesis, par, drc, lvs, ...).")
+    p_bprune.add_argument("--dry-run", action="store_true",
+                          help="Show what would be deleted, don't delete.")
+    p_bprune.add_argument("--yes", action="store_true",
+                          help="Skip the confirmation prompt (for cron).")
+    p_bprune.set_defaults(func=_cmd_blob_prune)
 
     p_brea = sub.add_parser(
         "blob-reassign",

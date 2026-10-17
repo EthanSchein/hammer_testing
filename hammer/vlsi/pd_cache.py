@@ -597,6 +597,7 @@ def cache_or_run(
                 stage_tag, key, tarball,
                 duration_seconds=duration_seconds,
                 cpu_seconds=cpu_seconds,
+                module=module,
                 **_provenance(),
             )
             store_seconds = time.monotonic() - _store_t0
@@ -613,7 +614,7 @@ def cache_or_run(
             store_seconds = None
             _warn(f"PD cache: store failed ({_brief(e)}); continuing. A later run that skips {stage_tag} stores it.")
             _mark_pending(rundir, {"key": key, "duration_seconds": duration_seconds, "cpu_seconds": cpu_seconds,
-                                   "provenance": _provenance(), "tries": 0})
+                                   "module": module, "provenance": _provenance(), "tries": 0})
         # The event is the record that the stage RAN; it must not vanish just
         # because the blob upload did. A store failure leaves store_seconds
         # empty, and the JSONL side of record_event works with no database at
@@ -712,7 +713,8 @@ def _store_pending(stage_tag: str, key: str, rundir: str, missing: bool, info: C
     try:
         pd_store.store_stage_blob(stage_tag, key, pd_store.tar_directory(Path(rundir)),
                                   duration_seconds=pending.get("duration_seconds"),
-                                  cpu_seconds=pending.get("cpu_seconds"), **provenance)
+                                  cpu_seconds=pending.get("cpu_seconds"), module=pending.get("module"),
+                                  **provenance)
     except Exception as e:
         tries = int(pending.get("tries") or 0) + 1
         if tries < PENDING_STORE_TRIES:
