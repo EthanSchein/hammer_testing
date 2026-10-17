@@ -535,6 +535,39 @@ def _connect_timeout() -> int:
     return 0 if seconds <= 0 or seconds > 2**31 - 1 else math.ceil(seconds)
 
 
+def _statement_timeout() -> int:
+    """Seconds a cache statement may run, from HAMMER_PG_STATEMENT_TIMEOUT (default 600; 0 leaves it to the server)."""
+    try:
+        seconds = float(os.environ.get("HAMMER_PG_STATEMENT_TIMEOUT") or 600)
+    except ValueError:
+        return 600
+    if math.isnan(seconds):
+        return 600
+    return 0 if seconds <= 0 else math.ceil(min(seconds, 2**31 // 1000 - 1))
+
+
+def _session_settings() -> Dict[str, Any]:
+    """TCP keepalives, so a dead server is noticed within about a minute, and the statement timeout PGOPTIONS lacks."""
+    settings: Dict[str, Any] = {"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10,
+                                "keepalives_count": 3}
+    seconds = _statement_timeout()
+    pgoptions = os.environ.get("PGOPTIONS", "").strip()
+    if seconds and not re.search(r"statement[-_]timeout", pgoptions, re.I):
+        settings["options"] = " ".join(filter(None, (pgoptions, f"-c statement_timeout={seconds * 1000}")))
+    return settings
+
+
+# (host, port) -> (monotonic time, reason) of the last connect that waited at least half its timeout and failed, so a
+# cache that is down costs one timeout per UNREACHABLE_RETRY_SECONDS instead of one per lookup, store and ledger write.
+_UNREACHABLE: Dict[Tuple[Any, Any], Tuple[float, str]] = {}
+UNREACHABLE_RETRY_SECONDS = 60
+
+
+def _now() -> float:
+    import time
+    return time.monotonic()
+
+
 def _connect():
     """Open a new psycopg2 connection using env-var config."""
     if psycopg2 is None:
@@ -543,7 +576,24 @@ def _connect():
             "Install psycopg2 (see UV_SETUP.md, or `conda install psycopg2` in a "
             "conda env) to enable caching."
         )
-    return psycopg2.connect(**_pg_settings())
+    settings = _pg_settings()
+    where = (settings.get("host"), settings.get("port"))
+    failed = _UNREACHABLE.get(where)
+    if failed and _now() - failed[0] < UNREACHABLE_RETRY_SECONDS:
+        raise psycopg2.OperationalError(f"{failed[1]}; trying again after {UNREACHABLE_RETRY_SECONDS}s")
+    started = _now()
+    try:
+        conn = psycopg2.connect(**settings, **_session_settings())
+    except Exception as e:
+        # A quick refusal (too many connections, starting up) costs nothing to retry, so only a slow failure is kept.
+        slow = max(1.0, (settings.get("connect_timeout") or 10) / 2)
+        if isinstance(e, getattr(psycopg2, "OperationalError", ())) and _now() - started >= slow:
+            reason = (str(e).strip().splitlines() or ["no answer"])[0]
+            _UNREACHABLE[where] = (_now(),
+                                   f"the cache database at {where[0]}:{where[1]} did not answer ({reason})")
+        raise
+    _UNREACHABLE.pop(where, None)
+    return conn
 
 
 _DDL = f"""

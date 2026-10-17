@@ -61,6 +61,13 @@ def _no_developer_stack_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_cache_outage(monkeypatch):
+    """Each test starts with no cache server remembered as down."""
+    from hammer.vlsi import pd_store
+    monkeypatch.setattr(pd_store, "_UNREACHABLE", {})
+
+
+@pytest.fixture(autouse=True)
 def _no_developer_postgres_target(tmp_path_factory, monkeypatch):
     """Keep this checkout's own .sledgehammer/postgres.env out of the code under test."""
     from hammer.vlsi import pd_store
