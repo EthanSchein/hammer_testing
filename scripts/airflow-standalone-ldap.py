@@ -714,6 +714,8 @@ def _lite_main():
     _prepare_cache_schema()
     host = socket.getfqdn()
     print("[lite] starting the scheduler, dag-processor and api-server (no triggerer, log server or pgAdmin)")
+    print("[lite] The Health panel on the UI's home page shows the Triggerer as down; that is expected, "
+          "since lite runs none and SledgeHammer needs none.")
     print(f"[lite] Web UI  : http://localhost:{port}   (running on {host})")
     print(f"[lite] {_login_line()}")
     print(f"[lite] {_tunnel_line(f'-L {port}:localhost:{port}')}")
