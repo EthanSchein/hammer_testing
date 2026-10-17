@@ -38,13 +38,13 @@ def test_key_failure_streams_checkpoints_and_never_stores(tmp_path, cache, monke
     assert stored == []
 
 
-def test_lookup_failure_streams_checkpoints_and_never_stores(tmp_path, cache, monkeypatch) -> None:
+def test_lookup_failure_streams_checkpoints_and_stores_the_result(tmp_path, cache, monkeypatch) -> None:
     streamed, stored = cache
     monkeypatch.setattr(pd_cache, "_build_cache_key", lambda driver, stage: "k")
     monkeypatch.setattr(pd_store, "load_stage_blob", _boom)
     assert _cache_or_run(tmp_path) == (True, {"par.outputs.x": 1})
     assert streamed == [("par", str(tmp_path))]
-    assert stored == []
+    assert [a[:2] for a in stored] == [("par", "k")]
 
 
 @pytest.mark.skipif(os.name == "nt" or os.geteuid() == 0, reason="needs file permissions that bind")

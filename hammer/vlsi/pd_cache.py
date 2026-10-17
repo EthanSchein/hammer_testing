@@ -21,6 +21,7 @@ load_stage_blob returns None and the stage runs from scratch.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -459,6 +460,9 @@ def cache_or_run(
         if log is not None:
             log.warning(msg)
 
+    # The stage runs or restores into rundir now, so an older failed store no longer describes what it holds.
+    _forget(_pending_path(rundir))
+
     if not is_cache_enabled(driver):
         _info(f"PD cache disabled for {stage_tag} (set HAMMER_PD_CACHE=1 or "
               f"vlsi.pd_cache.enabled to turn it on); running normally.")
@@ -493,8 +497,9 @@ def cache_or_run(
             _restore_t0 = time.monotonic()
             blob = pd_store.load_stage_blob(key)
         except Exception as e:
-            _warn(f"PD cache: lookup failed ({e}); running {stage_tag} normally.")
-            return _run_with_checkpoint_stream(driver, stage_tag, rundir, run_fn)
+            # Run it as a miss, so the result is stored, or kept for a later skip to store, once the cache is back.
+            _warn(f"PD cache: lookup failed ({_brief(e)}); running {stage_tag} normally.")
+            blob = None
 
     if blob is not None:
         _, data, original_duration, original_cpu = blob
@@ -592,11 +597,7 @@ def cache_or_run(
                 stage_tag, key, tarball,
                 duration_seconds=duration_seconds,
                 cpu_seconds=cpu_seconds,
-                triggering_user=os.environ.get("HAMMER_AIRFLOW_TRIGGERING_USER") or None,
-                dag_id=os.environ.get("HAMMER_AIRFLOW_DAG_ID") or None,
-                dag_run_id=os.environ.get("HAMMER_AIRFLOW_RUN_ID") or None,
-                workspace=os.environ.get("HAMMER_AIRFLOW_WORKSPACE") or None,
-                design=os.environ.get("HAMMER_AIRFLOW_DESIGN") or os.environ.get("design") or None,
+                **_provenance(),
             )
             store_seconds = time.monotonic() - _store_t0
             cpu_msg = (
@@ -610,7 +611,9 @@ def cache_or_run(
             )
         except Exception as e:
             store_seconds = None
-            _warn(f"PD cache: store failed ({e}); continuing.")
+            _warn(f"PD cache: store failed ({_brief(e)}); continuing. A later run that skips {stage_tag} stores it.")
+            _mark_pending(rundir, {"key": key, "duration_seconds": duration_seconds, "cpu_seconds": cpu_seconds,
+                                   "provenance": _provenance(), "tries": 0})
         # The event is the record that the stage RAN; it must not vanish just
         # because the blob upload did. A store failure leaves store_seconds
         # empty, and the JSONL side of record_event works with no database at
@@ -624,6 +627,105 @@ def cache_or_run(
             enabled=ledger_on,
         )
     return success, output
+
+
+def _brief(e: BaseException) -> str:
+    """An error's first line: libpq's own run over several, the rest being hints such as "Is the server running"."""
+    return next((line.strip() for line in str(e).splitlines() if line.strip()), type(e).__name__)
+
+
+def _provenance() -> Dict[str, Optional[str]]:
+    return dict(
+        triggering_user=os.environ.get("HAMMER_AIRFLOW_TRIGGERING_USER") or None,
+        dag_id=os.environ.get("HAMMER_AIRFLOW_DAG_ID") or None,
+        dag_run_id=os.environ.get("HAMMER_AIRFLOW_RUN_ID") or None,
+        workspace=os.environ.get("HAMMER_AIRFLOW_WORKSPACE") or None,
+        design=os.environ.get("HAMMER_AIRFLOW_DESIGN") or os.environ.get("design") or None,
+    )
+
+
+# Skips that retry a failed store before the result is left out of the cache.
+PENDING_STORE_TRIES = 3
+
+
+def _pending_path(rundir: str) -> Path:
+    """Beside the rundir, so the tarball never carries it: the key and runtime of a result whose store failed."""
+    path = Path(rundir)
+    return path.parent / f".{path.name}.pd-store-pending.json"
+
+
+def _rundir_state(rundir: str) -> str:
+    """A digest of each file's path, size and mtime in the rundir, but the output and config files every run rewrites
+    after the store."""
+    root = Path(rundir)
+    digest = hashlib.sha256()
+    for top, dirs, files in os.walk(root):
+        dirs.sort()
+        for name in sorted(files):
+            path = Path(top) / name
+            if top == str(root) and re.fullmatch(
+                    r"[\w.-]+-output(\.json|-full\.json|-history\.yml)|full_config\.json|module_config\.json", name):
+                continue
+            try:
+                st = path.lstat()
+            except OSError:
+                continue
+            line = f"{path.relative_to(root).as_posix()}\0{st.st_size}\0{st.st_mtime_ns}\n"
+            digest.update(line.encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()
+
+
+def _mark_pending(rundir: str, pending: Dict[str, Any]) -> None:
+    """Best effort: a stage that already succeeded must not fail over its retry marker."""
+    try:
+        _pending_path(rundir).write_text(json.dumps({**pending, "state": _rundir_state(rundir)}))
+    except Exception:
+        pass
+
+
+def _forget(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _store_pending(stage_tag: str, key: str, rundir: str, missing: bool, info: Callable[[str], None],
+                   warn: Callable[[str], None]) -> None:
+    """Store the local result of a run whose own store failed, while the cache still has no entry for it."""
+    path = _pending_path(rundir)
+    try:
+        pending = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(pending, dict) or pending.get("key") != key or not missing:
+        _forget(path)
+        return
+    if pending.get("state") != _rundir_state(rundir):
+        _forget(path)
+        info(f"PD cache (skip-path): {stage_tag}'s rundir changed after its store failed; not storing it.")
+        return
+    provenance = _provenance()
+    recorded = pending.get("provenance")
+    if isinstance(recorded, dict):
+        provenance.update((k, v) for k, v in recorded.items() if k in provenance)
+    try:
+        pd_store.store_stage_blob(stage_tag, key, pd_store.tar_directory(Path(rundir)),
+                                  duration_seconds=pending.get("duration_seconds"),
+                                  cpu_seconds=pending.get("cpu_seconds"), **provenance)
+    except Exception as e:
+        tries = int(pending.get("tries") or 0) + 1
+        if tries < PENDING_STORE_TRIES:
+            _mark_pending(rundir, {**pending, "tries": tries})
+            warn(f"PD cache (skip-path): could not store the {stage_tag} result an earlier run failed to store "
+                 f"({_brief(e)}); a later skip tries again.")
+        else:
+            _forget(path)
+            warn(f"PD cache (skip-path): could not store the {stage_tag} result an earlier run failed to store "
+                 f"({_brief(e)}), {tries} times; leaving it out of the cache.")
+        return
+    _forget(path)
+    info(f"PD cache (skip-path): stored the {stage_tag} result an earlier run failed to store (sha256={key[:16]}...).")
 
 
 def try_restore_from_cache(
@@ -673,6 +775,7 @@ def try_restore_from_cache(
         try:
             key = _build_cache_key(driver, stage_tag)
             runtime = pd_store.stage_blob_runtime(key)
+            _store_pending(stage_tag, key, rundir, runtime is None, _info, _warn)
             if runtime is not None:
                 original_duration, original_cpu = runtime
                 if original_duration:
@@ -714,7 +817,7 @@ def try_restore_from_cache(
         _restore_t0 = time.monotonic()
         blob = pd_store.load_stage_blob(key)
     except Exception as e:
-        _warn(f"PD cache (skip-path): lookup failed ({e}); not restoring.")
+        _warn(f"PD cache (skip-path): lookup failed ({_brief(e)}); not restoring.")
         return False
 
     if blob is None:

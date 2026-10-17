@@ -1380,7 +1380,8 @@ class HammerDatabase:
             pd_store.store_master_database(design, contents)
             print(f"[master-db] mirrored {master_path} to postgres (design {design})")
         except Exception as e:
-            print(f"[master-db] WARNING: postgres mirror failed ({e}); "
+            brief = next((line.strip() for line in str(e).splitlines() if line.strip()), type(e).__name__)
+            print(f"[master-db] WARNING: postgres mirror failed ({brief}); "
                   f"the on-disk file at {master_path} is the only copy of this write")
 
     def revert_rerun(self, stage: str, filename: str = "master_database.json", reason: str = "failed"):
