@@ -16,7 +16,9 @@ field):
          ``$AIRFLOW__DATABASE__SQL_ALCHEMY_CONN``, else ``postgres.env``
          beside the secrets file (host, port and user, as written by
          ``sledgehammer postgres``), else ``airflow.cfg``
-         (the same connection string Airflow uses for its metadata DB)
+         (the same connection string Airflow uses for its metadata DB);
+         ``postgres.env`` comes first when ``sledgehammer postgres cache``
+         gave the cache a server of its own
     3. Hardcoded defaults
          host=localhost, port=5544,
          db=sledgehammer_studio (HAMMER_PG_DB in ``postgres.env`` wins),
@@ -310,6 +312,10 @@ LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 _PG_VARS = (("host", "HAMMER_PG_HOST"), ("port", "HAMMER_PG_PORT"), ("dbname", "HAMMER_PG_DB"),
             ("user", "HAMMER_PG_USER"), ("password", "HAMMER_PG_PASSWORD"))
 
+# Set in postgres.env by `sledgehammer postgres cache`: its host, port and user are the cache's own server and win over
+# Airflow's connection.
+SEPARATE_CACHE = "SLEDGE_SEPARATE_CACHE"
+
 
 def secrets_file(environ: Optional[Mapping[str, str]] = None) -> str:
     """The encrypted secrets: $SLEDGE_SECRETS_FILE, else .sledgehammer/airflow-secrets.env.gpg in this checkout."""
@@ -351,6 +357,9 @@ def pg_fields(environ: Optional[Mapping[str, str]] = None,
         source = "target"
     if not fallback:
         fallback, source = _parse_airflow_cfg_conn(), "cfg"
+    own = {field: target[var] for field, var in _PG_VARS if field in ("host", "port", "user") and target.get(var)}
+    if own and target.get(SEPARATE_CACHE):
+        fallback, source = own, "target"
     try:
         default_user = getpass.getuser()
     except Exception:
@@ -462,7 +471,7 @@ def _pg_settings(environ: Optional[Mapping[str, str]] = None,
     Precedence (first hit wins per field):
         1. HAMMER_PG_* environment variables
         2. Airflow's sql_alchemy_conn, from $AIRFLOW__DATABASE__SQL_ALCHEMY_CONN, else postgres.env
-           beside the secrets, else airflow.cfg
+           beside the secrets, else airflow.cfg; postgres.env comes first when it names a separate cache server
         3. Hardcoded defaults (the database: postgres.env's HAMMER_PG_DB, else sledgehammer_studio)
         4. Password only: libpq's own PGPASSWORD or pgpass file ($PGPASSFILE, else ~/.pgpass)
         5. Password only, when the host is local, the port is the one in local_postgres_dir()'s

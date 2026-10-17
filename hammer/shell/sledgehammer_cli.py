@@ -42,6 +42,7 @@ Which Postgres Airflow and the cache use:
   sledgehammer postgres show        where each points, and whether it answers
   sledgehammer postgres use local   switch both to your own local Postgres
   sledgehammer postgres configure   switch both to any other Postgres
+  sledgehammer postgres cache       move only the cache to another Postgres
 
 Set SLEDGE_DRYRUN=1 to print what it would run instead of running it.
 """

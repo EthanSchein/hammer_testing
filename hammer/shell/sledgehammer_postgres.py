@@ -11,16 +11,27 @@
   sledgehammer postgres configure
       Switch them to any other Postgres, such as a lab server or another
       port, asking for each setting in turn.
+  sledgehammer postgres cache
+      Move only the cache database to another Postgres, such as a team cache
+      on a lab server, while Airflow keeps its own database. Registered
+      workspaces and notification emails live in the cache database too, so
+      register them again there. When that server cannot be reached, a stage
+      runs instead of restoring, with a one-line warning, and stores its
+      result on a later run; a run that someone other than the DAG's owner
+      triggers stops, since its workspace is looked up there. Without
+      encrypted secrets, as where a stack env file gives Airflow its
+      database, it puts the password in ~/.pgpass ($PGPASSFILE) instead.
+      use local and configure put the cache back beside Airflow.
 
 A switch shows what changes and asks before it touches anything, twice when
 Airflow or the cache moves to another server or database. It rewrites
-AIRFLOW__DATABASE__SQL_ALCHEMY_CONN and HAMMER_PG_PASSWORD in the encrypted
-secrets under the same passphrase, keeps the old file as <secrets>.prev, and
-writes the host, port, user and cache database (never the password) to
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN (cache leaves it alone) and
+HAMMER_PG_PASSWORD in the encrypted secrets under the same passphrase,
+keeps the old file as <secrets>.prev, and writes the host, port, user and cache database (never the password) to
 postgres.env beside it, where studio and hammer-vlsi find them outside
 Airflow. DAG run history and cached results stay on the old server. With
-SLEDGE_DRYRUN=1, use local and configure stop after showing what would
-change, so nothing is changed or started.
+SLEDGE_DRYRUN=1, use local, configure and cache stop after showing what
+would change, so nothing is changed or started.
 """
 import getpass
 import os
@@ -478,8 +489,11 @@ def _show(session: _Session) -> int:
     if session.unread:
         print(f"  {session.secrets_file} was not read: {session.unread}")
 
-    print("Cache (DAG tasks on that server)")
     fields = pd_store.pg_fields(server.env, session.target)
+    if session.target.get(pd_store.SEPARATE_CACHE) and fields["host"][1] == "target":
+        print("Cache (DAG tasks; set apart from Airflow by sledgehammer postgres cache)")
+    else:
+        print("Cache (DAG tasks on that server)")
     for field, name in SHOWN:
         value, source = fields[field]
         _row(name, value, session.label(server, field, source))
@@ -501,6 +515,9 @@ def _show(session: _Session) -> int:
         if where == session.secrets_label:
             print(f"NOTE: {var} is set in {where}. It wins over Airflow's connection and {session.target_file} "
                   f"for {who}, and sledgehammer postgres leaves it as it is.")
+        elif var == CONN and session.target.get(pd_store.SEPARATE_CACHE):
+            print(f"NOTE: {var} is set in {where}. It wins over the encrypted secrets for {who}; the cache follows "
+                  f"{session.target_file} instead, as sledgehammer postgres cache set it.")
         else:
             print(f"NOTE: {var} is set in {where}. It wins over the encrypted secrets and {session.target_file} "
                   f"for {who}.")
@@ -515,11 +532,14 @@ def _show(session: _Session) -> int:
     return 0
 
 
-def _warn(session: _Session, views: List[_View]) -> None:
+def _warn(session: _Session, views: List[_View], rewrites: str = f"{CONN} and {PASSWORD}",
+          skip: Tuple[str, ...] = ()) -> None:
     for var, where, who in session.reach(views):
+        if var in skip:
+            continue
         if where == session.secrets_label:
             print(f"WARNING: {var} is set in {where}, so it keeps winning for {who}: this switch rewrites only "
-                  f"{CONN} and {PASSWORD} there. Remove it from the secrets (see \"Rotating a secret\" in "
+                  f"{rewrites} there. Remove it from the secrets (see \"Rotating a secret\" in "
                   f"readme_documents/SECRETS.md) to let the switch reach them.")
         else:
             undo = "until you unset it" if where == SHELL else "until you remove it from that file"
@@ -627,7 +647,7 @@ def _write_target(path: str, values: Dict[str, str]) -> None:
     tmp = _private_temp(os.path.dirname(path) or ".")
     try:
         with open(tmp, "w") as f:
-            f.write("# Written by sledgehammer postgres; the password stays in the encrypted secrets.\n")
+            f.write("# Written by sledgehammer postgres; the password is never kept here.\n")
             f.write("".join(f"{key}={value}\n" for key, value in values.items()))
             f.flush()
             os.fsync(f.fileno())
@@ -716,7 +736,8 @@ def _use_local(session: _Session) -> int:
             password = _first_line(local["SLEDGE_PG_PASSWORD_FILE"])
         except OSError:
             pass
-    held = password is not None and _holds(session.secrets, new, password)
+    separate = bool(session.target.get(pd_store.SEPARATE_CACHE))
+    held = password is not None and not separate and _holds(session.secrets, new, password)
     takes_over = pg_dir if not local or _another_server(session.secrets, new, password) else None
     if held and session.target == _target_values(new, pg_dir):
         print(f"SledgeHammer already uses your local Postgres in {pg_dir}.")
@@ -760,7 +781,8 @@ def _use_local(session: _Session) -> int:
             return 1
     password_file = local["SLEDGE_PG_PASSWORD_FILE"]
     password = _first_line(password_file)
-    rc = _apply(session, new, password, password_file, pg_dir, rewrite=not _holds(session.secrets, new, password))
+    rc = _apply(session, new, password, password_file, pg_dir,
+                rewrite=separate or not _holds(session.secrets, new, password))
     if rc == 0:
         print(f"Its password is in {password_file}.")
     return rc
@@ -829,7 +851,8 @@ def _configure(session: _Session) -> int:
     user = _ask("user", old.get("user") or cache["user"][0], _check_name)
     airflow_db = _ask("Airflow database", old["dbname"] if old.get("dbname") and old.get("user") == user
                       else f"airflow_{user}", _check_name)
-    cache_db = _ask("cache database", cache["dbname"][0], _check_name)
+    cache_db = _ask("cache database", CACHE_DB if session.target.get(pd_store.SEPARATE_CACHE) else cache["dbname"][0],
+                    _check_name)
     password = _ask_password()
     new = Target(host, port, user, airflow_db, cache_db)
     print(f"Testing {_server(host, port)} as {user}:")
@@ -851,11 +874,128 @@ def _configure(session: _Session) -> int:
     return _apply(session, new, password)
 
 
+def _pgpass_field(value) -> str:
+    return str(value).replace("\\", "\\\\").replace(":", "\\:")
+
+
+def _write_pgpass(path: str, host: str, port: int, db: str, user: str, password: str) -> None:
+    """Put this login first in a pgpass file, mode 600, in place of any line for the same server, database and user.
+
+    libpq takes the first line that matches, so a wildcard line further down cannot shadow it.
+    """
+    path = os.path.realpath(path)
+    head = ":".join(_pgpass_field(v) for v in (host, port, db, user)) + ":"
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            lines = f.read().split("\n")
+    except FileNotFoundError:
+        lines = []
+    if lines and lines[-1] == "":
+        lines.pop()
+    lines = [head + _pgpass_field(password)] + [line for line in lines if not line.startswith(head)]
+    tmp = _private_temp(os.path.dirname(path) or ".")
+    try:
+        with open(tmp, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+            f.write("\n".join(lines) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _cache(session: _Session) -> int:
+    if not session.unlock():
+        return 1
+    # The encrypted secrets reach the DAG tasks only when Airflow's connection comes from them (venv.sh copies them into
+    # the shell); when a stack env file or the shell gives it, the password goes where libpq looks instead.
+    conn_elsewhere = session.shell.get(CONN) or session.stack.get(CONN)
+    in_secrets = session.plaintext is not None and (not conn_elsewhere or pd_store._parse_conn_uri(conn_elsewhere)
+                                                    == pd_store._parse_conn_uri(session.secrets.get(CONN, "")))
+    pgpass = None if in_secrets else (os.environ.get("PGPASSFILE") or os.path.join(os.path.expanduser("~"), ".pgpass"))
+    airflow = session.airflow(session.views()[0])[0] or session.airflow(session.views()[1])[0]
+    cache = pd_store.pg_fields(session.views()[0].env, session.target)
+    print("The Postgres for the cache only; Airflow keeps its own database (Enter keeps the value in brackets):")
+    host = _ask("host", cache["host"][0], _check_host)
+    port = int(_ask("port", cache["port"][0], _check_port))
+    user = _ask("user", cache["user"][0], _check_name)
+    cache_db = _ask("cache database", cache["dbname"][0], _check_name)
+    password = _ask_password()
+    print(f"Testing {_server(host, port)} as {user}:")
+    result = _reachable({"host": host, "port": port, "user": user, "password": password, "dbname": cache_db})
+    print(f"  cache database {cache_db}: reachable {result}")
+    if result != "yes" and not _yes("Continue anyway? [y/N]: "):
+        print("Nothing changed.")
+        return 1
+    values = {"HAMMER_PG_HOST": host, "HAMMER_PG_PORT": str(port), "HAMMER_PG_USER": user, "HAMMER_PG_DB": cache_db,
+              pd_store.SEPARATE_CACHE: "1"}
+    if session.target.get("SLEDGE_PG_DIR"):
+        values["SLEDGE_PG_DIR"] = session.target["SLEDGE_PG_DIR"]
+    after = session.views({**session.secrets, PASSWORD: "-"})
+    then = pd_store.pg_fields(after[0].env, values)
+    print("This switch changes:")
+    print(f"  cache    {_fields_where(cache)}")
+    print(f"       ->  {_fields_where(then)}")
+    print(f"  Airflow  stays on {_conn_where(airflow) if airflow.get('host') else 'the database it uses now'}")
+    if pgpass:
+        why = ("There are no encrypted secrets" if session.plaintext is None else
+               f"Airflow's connection comes from {session.overrides.get(CONN)}, not the encrypted secrets")
+        print(f"{why}, so it puts the password first in {pgpass} (mode 600), in place of any line for this server, "
+              f"database and user, and writes {session.target_file}.")
+        if os.environ.get("PGPASSWORD"):
+            print(f"WARNING: PGPASSWORD is set in this shell, so it wins over {pgpass} until you unset it.")
+    else:
+        print(f"It rewrites {PASSWORD} in {session.secrets_file}, keeping the current file as "
+              f"{session.secrets_file}.prev, and writes {session.target_file}.")
+    _warn(session, after, rewrites=PASSWORD, skip=(CONN,))
+    was = tuple(cache[field][0] for field in ("host", "port", "dbname"))
+    stay = None
+    if _moved(was, (host, port, cache_db)):
+        place = _server(*was[:2]) + (f"/{was[2]}" if _same_server(was[:2], (host, port)) else "")
+        stay = f"cached results, registered workspaces and notification emails stay on {place}"
+        print(f"WARNING: C{stay[1:]}. {_server(host, port)}/{cache_db} starts empty unless it already holds them, so "
+              f"register a workspace or notification email again there (studio workspace-set, studio notify-email).")
+    if _dryrun():
+        return 0
+    if not _yes(f"Use {_server(host, port)} for the cache? [y/N]: ") \
+            or (stay is not None and not _yes(f"Your {stay}. Switch anyway? [y/N]: ")):
+        print("Nothing changed.")
+        return 1
+    session.applying = True
+    if pgpass:
+        try:
+            _write_pgpass(pgpass, host, port, cache_db, user, password)
+        except OSError as e:
+            _err(f"{pgpass} could not be written ({e}); nothing changed")
+            return 1
+        print(f"Wrote the password to {pgpass}.")
+    else:
+        try:
+            _encrypt_into(session.secrets_file, _replace(session.plaintext, {PASSWORD: _env_value(password)}),
+                          session.passphrase)
+        except (OSError, RuntimeError) as e:
+            _err(f"the secrets are unchanged: {e}")
+            return 1
+        print(f"Rewrote {session.secrets_file} (the previous one is {session.secrets_file}.prev).")
+    try:
+        os.makedirs(os.path.dirname(session.target_file) or ".", mode=0o700, exist_ok=True)
+        _write_target(session.target_file, values)
+    except OSError as e:
+        _err(f"the password is stored, but {session.target_file} could not be written ({e}); rerun this command")
+        return 1
+    print(f"Wrote {session.target_file}.")
+    print(f"The cache now uses {_where(user, host, port, cache_db)}, and Airflow keeps its own database. Restart a "
+          f"running sledgehammer server so its tasks pick it up.")
+    return 0
+
+
 def main(args: List[str]) -> int:
     if not args or args[0] in sledgehammer_cli.HELP_WORDS:
         sys.stdout.write(__doc__)
         return 0
-    command = {("show",): _show, ("use", "local"): _use_local, ("configure",): _configure}.get(tuple(args))
+    command = {("show",): _show, ("use", "local"): _use_local, ("configure",): _configure,
+               ("cache",): _cache}.get(tuple(args))
     if command is None:
         if args[0] == "use":
             _err("postgres use takes only local; for any other Postgres run: sledgehammer postgres configure")

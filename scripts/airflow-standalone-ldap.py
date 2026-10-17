@@ -259,6 +259,10 @@ def _load_postgres_target() -> None:
         return
     if target.get("HAMMER_PG_DB"):
         os.environ.setdefault("HAMMER_PG_DB", target["HAMMER_PG_DB"])
+    if target.get(pd_store.SEPARATE_CACHE):
+        for var in ("HAMMER_PG_HOST", "HAMMER_PG_PORT", "HAMMER_PG_USER"):
+            if target.get(var):
+                os.environ.setdefault(var, target[var])
     if target.get("SLEDGE_PG_DIR"):
         os.environ["SLEDGE_PG_DIR"] = target["SLEDGE_PG_DIR"]
 
