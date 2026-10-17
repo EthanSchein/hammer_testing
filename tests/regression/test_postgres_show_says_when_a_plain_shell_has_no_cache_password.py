@@ -105,7 +105,8 @@ def test_show_names_a_plain_shell_without_a_cache_password_exactly_when_it_has_n
     env_file.write_text("export HAMMER_PG_PASSWORD=pw2\n")
     monkeypatch.setenv("SLEDGE_ENV_FILE", str(env_file))
     rc, out, _ = box.run("show", answers=[PASSPHRASE])
-    assert "  hammer-vlsi " + NO_PASSWORD.format(verb="has", they="it", server="db2.example.edu:6543",
-                                                 pgpass="~/.pgpass") + "\n" in out
+    assert ("  hammer-vlsi in this shell has no password for the cache, so it cannot log in; it would take one from "
+            f"HAMMER_PG_PASSWORD, which \"source {env_file}\" loads if that file sets it, or from a line for "
+            "db2.example.edu:6543 in ~/.pgpass\n") in out
     assert "studio and hammer-vlsi in this shell have no password" not in out
     assert "pw2" not in out
