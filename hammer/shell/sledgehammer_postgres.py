@@ -351,7 +351,8 @@ class _Session:
             return view.src.get(FIELD_VARS[field], SHELL)
         if source == "conn":
             return f"Airflow's connection, from {view.src.get(CONN, SHELL)}"
-        return {"target": self.target_file, "cfg": "airflow.cfg", "default": "the built-in fallback"}[source]
+        return {"target": self.target_file, "cfg": "airflow.cfg", "default": "the built-in fallback",
+                "libpq": "libpq's default for a connection without a port (PGPORT, else 5432)"}[source]
 
     def reach(self, views: List[_View]) -> List[Tuple[str, str, str]]:
         """(variable, where it is set, who takes it) for each override and each HAMMER_PG_* line of the secrets."""
@@ -491,9 +492,10 @@ def _show(session: _Session) -> int:
     _outside(session, views, fields)
     _no_password(session, views)
 
-    if airflow and not _same_server((airflow.get("host"), airflow.get("port")), (fields["host"][0], fields["port"][0])):
+    airflow_port = airflow.get("port") or pd_store.libpq_default_port(server.env)
+    if airflow and not _same_server((airflow.get("host"), airflow_port), (fields["host"][0], fields["port"][0])):
         print(f"NOTE: Airflow and the cache point at different servers: Airflow at "
-              f"{_server(airflow.get('host'), airflow.get('port'))}, the cache at "
+              f"{_server(airflow.get('host'), airflow_port)}, the cache at "
               f"{_server(fields['host'][0], fields['port'][0])}.")
     for var, where, who in session.reach(views):
         if where == session.secrets_label:
@@ -821,7 +823,8 @@ def _configure(session: _Session) -> int:
     old = pd_store._parse_conn_uri(session.secrets.get(CONN, ""))
     cache = pd_store.pg_fields(session.views()[0].env, session.target)
     print("The Postgres for Airflow and the cache (Enter keeps the value in brackets):")
-    host = _ask("host", old.get("host") or cache["host"][0], _check_host)
+    host = _ask("host", next(h for h in (old.get("host"), cache["host"][0], "localhost")
+                             if h and not _check_host(str(h))), _check_host)
     port = int(_ask("port", old.get("port") or cache["port"][0], _check_port))
     user = _ask("user", old.get("user") or cache["user"][0], _check_name)
     airflow_db = _ask("Airflow database", old["dbname"] if old.get("dbname") and old.get("user") == user
