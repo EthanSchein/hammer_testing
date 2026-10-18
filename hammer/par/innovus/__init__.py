@@ -1705,14 +1705,15 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                     self.py_append("db().extract_rc_engine = 'pre_route'")
                     self.py_append("route_design()")
                     self.py_append("db().extract_rc_engine = 'post_route'")
-                    self.py_append("opt_design(post_route=True, timing_debug_report=True)")
+                    self.py_append("opt_design(post_route=True, setup=True, hold=True, expanded_views=True, "
+                                   "timing_debug_report=True)")
                     if self.hierarchical_mode.is_nonleaf_hierarchical():
                         self.py_append("unflatten_ilm()")
                 else:
                     self.verbose_append("set_db extract_rc_engine pre_route")
                     self.verbose_append("route_design")
                     self.verbose_append("set_db extract_rc_engine post_route")
-                    self.verbose_append("opt_design -post_route -timing_debug_report")
+                    self.verbose_append("opt_design -post_route -setup -hold -expanded_views -timing_debug_report")
                     if self.hierarchical_mode.is_nonleaf_hierarchical():
                         self.verbose_append("unflatten_ilm")
                 return True
