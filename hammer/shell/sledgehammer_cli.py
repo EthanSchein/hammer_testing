@@ -158,6 +158,10 @@ def _airflow(*a, capture=True):
 
 # Polls in a row, 30s apart, that may fail before `sledgehammer run` stops watching.
 _WATCH_TRIES = 10
+# Polls in a row that find no live scheduler before `sledgehammer run` warns that the run starts no new stage.
+_NO_SCHEDULER_POLLS = 3
+# Polls between scheduler checks while one is alive, since each check is another airflow command.
+_SCHEDULER_CHECK_EVERY = 4
 
 
 class _AirflowFailed(Exception):
@@ -181,6 +185,14 @@ def _run_state(dag_id, run_id):
         if len(parts) >= 3 and parts[1] == run_id:
             return parts[2]
     return None
+
+
+def _scheduler_alive():
+    """True or False from airflow jobs check, or None when airflow itself failed, e.g. with its database down."""
+    rc, out, err = _airflow("jobs", "check", "--job-type", "SchedulerJob")
+    if rc == 0:
+        return True
+    return False if "No alive jobs found" in err + out else None
 
 
 def _task_states(dag_id, run_id):
@@ -574,6 +586,9 @@ def _cmd_run(args) -> int:
     print("[sledgehammer] streaming (Ctrl-C detaches; the run keeps going)")
     last = {}
     misses = 0
+    polls = 0
+    check_at = 1
+    no_scheduler = 0
     try:
         while True:
             for t, s in sorted(_task_states(dag_id, run_id).items()):
@@ -599,6 +614,25 @@ def _cmd_run(args) -> int:
                       f"  The run may still be going; check later with: sledgehammer status --design {design}",
                       file=sys.stderr)
                 return 1
+            polls += 1
+            if not problem and polls >= check_at:
+                alive = _scheduler_alive()
+                check_at = polls + (_SCHEDULER_CHECK_EVERY if alive else 1)
+                if alive is False:
+                    no_scheduler += 1
+                    if no_scheduler == _NO_SCHEDULER_POLLS:
+                        print(f"[sledgehammer] no Airflow scheduler has been alive for over a minute, "
+                              f"so run {run_id} starts no new stage.\n"
+                              f"  A stage that is already running keeps going.\n"
+                              f"  The lite stack restarts a stuck or crashed scheduler by itself.\n"
+                              f"  If the stack is not running, start it with:  sledgehammer\n"
+                              f"  If the run does not recover, stop it and free its directory with:  "
+                              f"sledgehammer cancel {run_id}\n"
+                              f"  Still watching; Ctrl-C here only detaches.")
+                elif alive:
+                    if no_scheduler >= _NO_SCHEDULER_POLLS:
+                        print(f"[sledgehammer] an Airflow scheduler is alive again, so run {run_id} can move on")
+                    no_scheduler = 0
             time.sleep(30)
     except KeyboardInterrupt:
         print(f"\n[sledgehammer] detached; check later with: "
