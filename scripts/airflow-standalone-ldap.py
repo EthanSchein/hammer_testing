@@ -307,13 +307,15 @@ def _start_local_postgres() -> None:
 
 
 def _mirror_metadata_conn_for_callbacks() -> None:
-    """Stage the metadata-DB connection in a file DAG callbacks can read.
+    """Stage the metadata-DB connection in a file DAG tasks and callbacks can read.
 
-    Airflow 3 hands callbacks a decoy sqlite conn, not the real one, so the
-    completion notifier can't reach the dag_run row the usual way. We mirror the
-    real conn into a chmod-600 file beside the SMTP password file, which survives
-    into the callback through the SLEDGE_ env (see
-    pd_store.airflow_metadata_conn_settings). Rewritten on every startup.
+    Airflow 3 hands tasks and callbacks a decoy conn, not the real one, so the
+    run lock and the completion notifier can't reach the dag_run row the usual
+    way. We mirror the real conn into a chmod-600 file, beside the SMTP password
+    file when there is one and in the checkout's .sledgehammer/ otherwise, and
+    export its path as SLEDGE_METADATA_CONN_FILE, which survives into tasks and
+    callbacks (see pd_store.airflow_metadata_conn_settings). Rewritten on every
+    startup.
     """
     conn = os.environ.get("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "")
     if not conn.startswith("postgres"):
@@ -321,17 +323,20 @@ def _mirror_metadata_conn_for_callbacks() -> None:
     target = os.environ.get("SLEDGE_METADATA_CONN_FILE")
     if not target:
         smtp_pw = os.environ.get("SLEDGE_SMTP_PASSWORD_FILE")
-        if not smtp_pw:
-            return
-        target = os.path.join(os.path.dirname(smtp_pw), ".sledge_metadata_conn")
+        if smtp_pw:
+            target = os.path.join(os.path.dirname(smtp_pw), ".sledge_metadata_conn")
+        else:
+            repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            target = os.path.join(repo, ".sledgehammer", ".sledge_metadata_conn")
     try:
+        os.makedirs(os.path.dirname(target) or ".", mode=0o700, exist_ok=True)
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(conn + "\n")
         os.chmod(target, 0o600)
-        print(f"[secrets] mirrored metadata conn for callbacks -> {target}")
+        os.environ["SLEDGE_METADATA_CONN_FILE"] = target
     except Exception as e:
-        print(f"[secrets] WARNING: could not stage metadata conn for callbacks: {e}")
+        print(f"[secrets] WARNING: could not stage metadata conn for tasks and callbacks: {e}")
 
 
 def _load_smtp_settings() -> None:

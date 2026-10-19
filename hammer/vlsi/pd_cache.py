@@ -159,8 +159,8 @@ def _check_restore_allowed(rundir_path: Path) -> None:
         return
     raise CacheRestoreContested(
         f"refusing cache restore into {rundir_path}: its obj_dir is locked by "
-        f"run {holder!r} (this process is {ours!r}). If that run is dead, "
-        f"remove {lock} and retry."
+        f"run {holder!r} (this process is {ours!r}). To stop that run and free "
+        f"this directory:  sledgehammer cancel {holder}"
     )
 
 

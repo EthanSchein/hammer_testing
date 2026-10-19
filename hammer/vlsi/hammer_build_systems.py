@@ -736,7 +736,9 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
                     # only resolver-infrastructure trouble may fall through.
                     # The same goes for a non-owner with no registered
                     # workspace: the baked OBJ_DIR is the owner's.
-                    if type(e).__name__ in ("RunLockConflict", "WorkspaceNotRegistered"):
+                    if type(e).__name__ == "RunLockConflict":
+                        raise AirflowFailException(str(e)) from e
+                    if type(e).__name__ == "WorkspaceNotRegistered":
                         raise
                     print(f"[workspace] resolver unavailable ({{e}}); using gen-time OBJ_DIR")
 

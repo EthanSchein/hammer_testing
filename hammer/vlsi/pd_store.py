@@ -254,12 +254,13 @@ def airflow_metadata_conn_settings() -> Dict[str, Any]:
 
     A normal Airflow process (scheduler, CLI) has the real URI in
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN. Tasks and callbacks don't: Airflow 3
-    hands them a decoy sqlite conn instead. The completion callback still needs
-    the dag_run row, so we fall back to a SLEDGE_-prefixed channel the sandbox
-    leaves alone -- an inline SLEDGE_METADATA_CONN, or a .sledge_metadata_conn
-    file kept beside the SMTP password file (the launcher writes it; the SMTP env
-    var carries the path through). Falls back to airflow's config / airflow.cfg
-    for callers outside Airflow. Empty dict if nothing usable turns up.
+    hands them a decoy sqlite conn instead. The run lock and the completion
+    callback still need the dag_run row, so we fall back to a SLEDGE_-prefixed
+    channel the sandbox leaves alone: an inline SLEDGE_METADATA_CONN, or the
+    file SLEDGE_METADATA_CONN_FILE names (the launcher writes it and exports the
+    path), else a .sledge_metadata_conn beside the SMTP password file. Falls
+    back to airflow's config / airflow.cfg for callers outside Airflow. Empty
+    dict if nothing usable turns up.
     """
     for var in ("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "SLEDGE_METADATA_CONN"):
         settings = _parse_conn_uri(os.environ.get(var, ""))

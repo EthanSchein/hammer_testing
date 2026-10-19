@@ -56,6 +56,7 @@ _INFRA_FILES: Tuple[str, ...] = (
     "vlsi/pd_cache.py",
     "vlsi/pd_store.py",
     "vlsi/pd_notify.py",
+    "vlsi/run_liveness.py",
     "vlsi/substep_resume.py",
     "vlsi/time_tracking.py",
     "vlsi/error_scan.py",

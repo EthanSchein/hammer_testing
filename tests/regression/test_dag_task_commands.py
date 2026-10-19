@@ -184,11 +184,12 @@ class TestNonOwnerWorkspace:
         with pytest.raises(hammer_vlsi.WorkspaceNotRegistered):
             dag("run_hammer_action", {}, "syn", ["-p", "x.json"])
 
-    def test_a_lock_conflict_still_fails_the_task(self, dag, monkeypatch) -> None:
+    def test_a_lock_conflict_fails_the_task_without_retries(self, dag, monkeypatch) -> None:
         import hammer.shell.hammer_vlsi as hammer_vlsi
         self._resolver_raises(monkeypatch, hammer_vlsi.RunLockConflict("held"))
-        with pytest.raises(hammer_vlsi.RunLockConflict):
+        with pytest.raises(_FailException, match="held") as err:
             dag("run_hammer_action", {}, "syn", ["-p", "x.json"])
+        assert isinstance(err.value.__cause__, hammer_vlsi.RunLockConflict)
 
     def test_resolver_infrastructure_trouble_falls_back(self, dag, monkeypatch) -> None:
         self._resolver_raises(monkeypatch, ImportError("no psycopg2"))

@@ -208,7 +208,9 @@ def _resolve_workspace_obj_dir(context, design, default_obj_dir=None, gen_user=N
     return obj_dir
 
 
-RUN_LOCK_NAME = ".sledgehammer-run.lock"
+from hammer.vlsi import run_liveness
+
+RUN_LOCK_NAME = run_liveness.RUN_LOCK_NAME
 
 
 class WorkspaceNotRegistered(RuntimeError):
@@ -235,33 +237,6 @@ def _run_lock_path(obj_dir):
     return os.path.join(obj_dir, RUN_LOCK_NAME)
 
 
-def _dag_run_state(dag_id, run_id):
-    """The holder run's state per the Airflow metadata DB, or None if unknowable.
-
-    Uses the same metadata-conn resolution as the notify path (env, then the
-    SLEDGE_ file channel, then airflow.cfg) because Airflow 3 hands tasks a
-    decoy connection.
-    """
-    if not dag_id or not run_id:
-        return None
-    try:
-        import psycopg2
-        from hammer.vlsi import pd_store
-        settings = pd_store.airflow_metadata_conn_settings()
-        if not settings:
-            return None
-        with psycopg2.connect(**settings) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT state FROM dag_run WHERE dag_id = %s AND run_id = %s",
-                    (str(dag_id), str(run_id)))
-                row = cur.fetchone()
-        return row[0] if row else None
-    except Exception as e:
-        print(f"[run-lock] holder liveness lookup failed: {e}")
-        return None
-
-
 def claim_obj_dir(obj_dir, dag_id, run_id, user):
     """Claim ``obj_dir`` for this DAG run, or fail.
 
@@ -272,16 +247,18 @@ def claim_obj_dir(obj_dir, dag_id, run_id, user):
     the same time, trigger with conf={"workspace": "<name>"} so it resolves
     somewhere else.
 
-    A lock whose holder the metadata DB says is finished (success/failed) is
-    stale and gets taken over. When the holder is live, or its state cannot
-    be determined, the claim refuses: a spurious refusal costs one manual
-    `rm`, a spurious takeover costs someone hours of tool time.
+    A holder that is finished, or that shows no activity for
+    run_liveness.STALE_SECONDS with no task on another host, and that has no
+    process left on this one, is stale and gets taken over. Otherwise the claim
+    refuses, also when the metadata DB cannot be reached: a spurious refusal
+    costs one `sledgehammer cancel`, a spurious takeover costs someone hours
+    of tool time.
     """
     if not obj_dir or not run_id:
         return
     lock = _run_lock_path(obj_dir)
     payload = json.dumps({
-        "dag_id": dag_id, "run_id": run_id, "user": user,
+        "dag_id": dag_id, "run_id": run_id, "user": user, "host": run_liveness.this_host(),
         "pid": os.getpid(), "claimed": datetime.datetime.now().isoformat(timespec="seconds"),
     })
     os.makedirs(obj_dir, exist_ok=True)
@@ -295,31 +272,18 @@ def claim_obj_dir(obj_dir, dag_id, run_id, user):
                 f.write(payload)
             return
 
-        try:
-            with open(lock) as f:
-                held = json.load(f)
-        except (OSError, ValueError):
-            held = {}
+        text, held, age = run_liveness.read_run_lock(lock)
         if str(held.get("run_id")) == str(run_id):
             return
-        state = _dag_run_state(held.get("dag_id"), held.get("run_id"))
-        if attempt == 1 and state in ("success", "failed"):
-            print(f"[run-lock] holder {held.get('run_id')!r} is terminal "
-                  f"({state}); taking over the stale lock.")
-            try:
-                os.remove(lock)
-            except OSError:
-                pass
-            continue
-        raise RunLockConflict(
-            f"Error: run already in progress in {obj_dir}.\n"
-            f"  held by run {held.get('run_id')!r} (dag {held.get('dag_id')!r}, "
-            f"user {held.get('user')!r}, claimed {held.get('claimed')!r}, "
-            f"state {state or 'unknown'})\n"
-            f"  To run a second iteration at the same time, trigger with "
-            f'conf={{"workspace": "<name>"}}.\n'
-            f"  If that run is gone, remove {lock}"
-        )
+        kind, message = run_liveness.check_run_lock(obj_dir, held, age, user=user)
+        if kind in run_liveness.TAKEOVER:
+            if attempt == 1:
+                if message:
+                    print(f"[run-lock] {message}")
+                run_liveness.remove_run_lock(lock, text)
+                continue
+            message = f"could not take over the lock in {obj_dir}: {lock} changed or could not be removed."
+        raise RunLockConflict(f"Error: {message}")
 
 
 def release_obj_dir(obj_dir, run_id):

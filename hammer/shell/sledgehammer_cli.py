@@ -404,6 +404,29 @@ def _no_dag_exit(design, dag_file, dags_src):
         f"      cd <vlsi dir> && make buildfile")
 
 
+# Same name as hammer.vlsi.run_liveness.RUN_LOCK_NAME; importing that would load all of hammer.vlsi.
+_RUN_LOCK_NAME = ".sledgehammer-run.lock"
+
+
+def _check_run_lock(obj_dir):
+    """Exit before triggering when another run that is, or may be, alive holds obj_dir."""
+    if not os.path.exists(os.path.join(obj_dir, _RUN_LOCK_NAME)):
+        return
+    try:
+        r = subprocess.run([sys.executable, "-m", "hammer.vlsi.run_liveness", obj_dir],
+                           capture_output=True, text=True, env=_airflow_env(), timeout=120)
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        kind, text = got["kind"], got["text"]
+    except (OSError, subprocess.SubprocessError, ValueError, LookupError, TypeError):
+        print(f"[sledgehammer] could not check whether another run holds {obj_dir}; "
+              f"the run checks again when it starts.", file=sys.stderr)
+        return
+    if kind in ("live", "busy", "unknown"):
+        sys.exit(f"[sledgehammer] {text}")
+    if kind == "stale":
+        print(f"[sledgehammer] {text}")
+
+
 def _cmd_run(args) -> int:
     import argparse
     import getpass
@@ -499,6 +522,9 @@ def _cmd_run(args) -> int:
     if "pcb" in actions and not _dag_has_pcb(dag_file):
         sys.exit(f"[sledgehammer] {dag_file} predates the pcb stage, so asking it for pcb would run "
                  f"nothing. Regenerate it (make buildfile), or run make pcb.")
+
+    if not a.workspace:
+        _check_run_lock(baked or obj_dir)
 
     _airflow("dags", "unpause", dag_id)
     conf = {s: True for s in actions}
