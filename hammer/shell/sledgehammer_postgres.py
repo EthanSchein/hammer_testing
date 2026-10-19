@@ -420,6 +420,8 @@ def _password_source(session: _Session, view: _View, fields: Dict) -> Optional[s
         return f"from {pgpass}, if it has a line for this server"
     if pd_store.local_password(fields, view.env, session.target)[0] is not None:
         return f"from {os.path.join(pd_store.local_postgres_dir(view.env, session.target), 'password')} (not shown)"
+    if str(fields["host"][0]).startswith("/"):
+        return "none; tries the Unix socket without one, which works with peer auth"
     return None
 
 

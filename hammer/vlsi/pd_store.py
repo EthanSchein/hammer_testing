@@ -26,7 +26,9 @@ field):
        There is no default password: if none resolves from the env,
        Airflow's connection, libpq's PGPASSWORD or pgpass file or, for your
        local Postgres while it runs on this host, its password file,
-       connecting raises rather than trying without one.
+       connecting raises rather than trying without one. A host that is a
+       Unix-socket directory (a path starting with /) tries without one,
+       which works when the server allows peer auth there.
 
 So after the default setup, which writes ``postgres.env`` for your local
 Postgres, ``pd_store`` needs no env vars on the host that Postgres runs on.
@@ -478,6 +480,8 @@ def _pg_settings(environ: Optional[Mapping[str, str]] = None,
         5. Password only, when the host is local, the port is the one in local_postgres_dir()'s
            postgresql.conf and that Postgres runs on this host: its password file, if it is yours
            and only you can read it
+        6. Password only: none when the host is a Unix-socket directory (a path starting with /),
+           which works when the server allows peer auth there
     """
     environ = os.environ if environ is None else environ
     if target is None:
@@ -497,6 +501,8 @@ def _pg_settings(environ: Optional[Mapping[str, str]] = None,
     password, why = local_password(fields, environ, target)
     if password is not None:
         settings["password"] = password
+        return settings
+    if str(settings["host"]).startswith("/"):
         return settings
     env_file = stack_env_file()
     load = (f"Run \"source {env_file}\" if it sets HAMMER_PG_PASSWORD" if env_file
@@ -598,6 +604,13 @@ def _connect():
     try:
         conn = psycopg2.connect(**settings, **_session_settings())
     except Exception as e:
+        if ("password" not in settings and str(settings.get("host")).startswith("/")
+                and "no password supplied" in str(e)):
+            pgpass = os.environ.get("PGPASSFILE")
+            add = f"add a line for this server to {pgpass}" if pgpass else "add a ~/.pgpass line for this server"
+            raise DatabaseUnavailable(
+                f"The Postgres server behind the socket in {settings['host']} asks for a password, and none was "
+                f"found. Export HAMMER_PG_PASSWORD, or {add}.") from e
         # A quick refusal (too many connections, starting up) costs nothing to retry, so only a slow failure is kept.
         slow = max(1.0, (settings.get("connect_timeout") or 10) / 2)
         if isinstance(e, getattr(psycopg2, "OperationalError", ())) and _now() - started >= slow:
