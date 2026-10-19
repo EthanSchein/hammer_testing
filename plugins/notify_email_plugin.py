@@ -17,6 +17,7 @@ import base64
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from airflow.plugins_manager import AirflowPlugin
@@ -139,9 +140,9 @@ async def save(request: Request, user: GetUserDep):
     email = (parse_qs(body).get("email", [""])[0] or "").strip()
     try:
         if email:
-            pd_store.set_notify_email(uid, email)
+            await run_in_threadpool(pd_store.set_notify_email, uid, email)
         else:
-            pd_store.delete_notify_email(uid)
+            await run_in_threadpool(pd_store.delete_notify_email, uid)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
     return JSONResponse({"ok": True, "current": email})
