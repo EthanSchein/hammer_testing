@@ -32,6 +32,7 @@ if [ "$mode" = ignore-term ]; then
 else
     trap 'echo "term $comp $$" >> "$FAKE_LOG"; echo "bye from $comp"; exit 0' TERM
 fi
+echo "ready $comp $$" >> "$FAKE_LOG"
 while :; do sleep 1 & wait $!; done
 """
 
@@ -73,7 +74,7 @@ class Lite:
             time.sleep(0.1)
 
     def started_all(self):
-        self.wait_for(lambda: {p[1] for p in self.lines("start")} >= {"scheduler", "dag-processor", "api-server"})
+        self.wait_for(lambda: {p[1] for p in self.lines("ready")} >= {"scheduler", "dag-processor", "api-server"})
 
     def pids(self):
         return [int(p[2]) for p in self.lines("start")] + [int(p[2]) for p in self.lines("child")]
@@ -149,16 +150,19 @@ def test_a_crashed_dag_processor_is_restarted(lite) -> None:
     lite.wait_for(lambda: lite.count("start", "dag-processor") == 2)
     lite.started_all()
     assert lite.count("start", "scheduler") == 1 and proc.poll() is None
-    assert "dag-processor exited (status 1); restarting it" in lite.output()
+    assert "the dag-processor exited (status 1)" in lite.output()
+    assert "restarting the dag-processor in 0s" in lite.output()
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(20) == 143
 
 
 def test_a_dag_processor_that_keeps_crashing_is_left_down_while_the_scheduler_runs(lite) -> None:
-    proc = lite.start(FAKE_DAG_PROCESSOR="crash")
+    proc = lite.start(FAKE_DAG_PROCESSOR="crash", SLEDGE_LITE_RESTART_FOR="2")
     lite.wait_for(lambda: "not restarting it" in lite.output())
+    starts = lite.count("start", "dag-processor")
     time.sleep(1)
-    assert lite.count("start", "dag-processor") == 3 and proc.poll() is None
+    assert starts >= 2 and lite.count("start", "dag-processor") == starts and proc.poll() is None
+    assert "the dag-processor has kept exiting within a minute of starting for 2s (last status 1)" in lite.output()
     assert "new or changed DAG files are not picked up" in lite.output()
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(20) == 143
@@ -166,9 +170,9 @@ def test_a_dag_processor_that_keeps_crashing_is_left_down_while_the_scheduler_ru
 
 
 def test_an_api_server_that_keeps_crashing_stops_the_stack(lite) -> None:
-    proc = lite.start(FAKE_API_SERVER="crash")
+    proc = lite.start(FAKE_API_SERVER="crash", SLEDGE_LITE_RESTART_FOR="2")
     assert proc.wait(20) == 1
-    assert lite.count("start", "api-server") == 3
+    assert lite.count("start", "api-server") >= 2
     assert "stopping the stack, because tasks report through it" in lite.output()
     assert sorted(lite.order("term")) == ["dag-processor", "scheduler"]
     lite.assert_all_gone()
@@ -253,8 +257,8 @@ def test_a_scheduler_that_keeps_failing_to_start_stops_the_stack_after_the_limit
 def test_the_others_are_watched_while_the_scheduler_waits_to_restart(lite) -> None:
     proc = lite.start(FAKE_SCHEDULER="crash", FAKE_DAG_PROCESSOR="exit7", SLEDGE_LITE_RESTART_DELAY="40")
     lite.wait_for(lambda: "restarting the scheduler in 40s" in lite.output())
-    lite.wait_for(lambda: lite.count("start", "dag-processor") == 3)
-    assert lite.count("start", "scheduler") == 1
+    lite.wait_for(lambda: "restarting the dag-processor in 40s" in lite.output())
+    assert "the dag-processor exited (status 7)" in lite.output() and lite.count("start", "scheduler") == 1
     proc.send_signal(signal.SIGTERM)
     assert proc.wait(20) == 143
     lite.assert_all_gone()
