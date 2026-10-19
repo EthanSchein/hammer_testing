@@ -21,7 +21,11 @@ Flow commands -- hammer's flags, the DAG as plumbing, no GUI required:
       Trigger the selected stages on an already-registered DAG and stream
       task states until the run finishes. Exit code follows the run, so it
       drops into a Makefile exactly where hammer-vlsi did. Generate the DAG
-      the usual way first: cd <vlsi dir> && make buildfile.
+      first: cd <vlsi dir> && sledgehammer buildfile.
+  cd vlsi && sledgehammer buildfile [VAR=val ...] [--target NAME]
+      Generate and register the DAG: runs `make buildfile` (`make build`
+      where that is the only rule) with this venv's python first on PATH,
+      so no venv needs activating. Extra arguments go to make.
   sledgehammer run drc lvs --obj_dir build/Top
   sledgehammer run syn --obj_dir build/Top --no-wait
       Trigger and return immediately (prints the run id).
@@ -400,8 +404,8 @@ def _no_dag_exit(design, dag_file, dags_src):
         f"[sledgehammer] no DAG registered for {design}.\n"
         f"  looked for: {dag_file}\n"
         f"  (dags folder from {dags_src})\n"
-        f"  Generate it first, the same way you always have:\n"
-        f"      cd <vlsi dir> && make buildfile")
+        f"  Generate it first:\n"
+        f"      cd <vlsi dir> && sledgehammer buildfile")
 
 
 # Same name as hammer.vlsi.run_liveness.RUN_LOCK_NAME; importing that would load all of hammer.vlsi.
@@ -455,7 +459,7 @@ def _find_build(obj_dir_arg, top, user, dags_folder, dags_src):
             sys.exit("[sledgehammer] could not work out obj_dir. Pass "
                      "--obj_dir, or -t <top> for a DAG that is already "
                      "registered, or run from the vlsi directory.\n"
-                     "  No DAG yet? Generate it first: cd <vlsi dir> && make buildfile")
+                     "  No DAG yet? Generate it first: cd <vlsi dir> && sledgehammer buildfile")
         obj_dir = os.path.abspath(obj_dir)
     if not obj_dir_arg:
         print(f"[sledgehammer] obj_dir from {src}: {obj_dir}")
@@ -471,7 +475,7 @@ def _find_build(obj_dir_arg, top, user, dags_folder, dags_src):
         sys.exit(
             f"[sledgehammer] {dag_id} is registered for {baked}, not {obj_dir}.\n"
             f"  Both builds are named {design}, and only the one generated last is registered.\n"
-            f"  Regenerate the DAG from {obj_dir} (make buildfile) to switch to it.")
+            f"  Regenerate the DAG from {obj_dir} (sledgehammer buildfile) to switch to it.")
     return design, obj_dir, dag_id, dag_file, baked
 
 
@@ -527,7 +531,7 @@ def _cmd_run(args) -> int:
 
     if "pcb" in actions and not _dag_has_pcb(dag_file):
         sys.exit(f"[sledgehammer] {dag_file} predates the pcb stage, so asking it for pcb would run "
-                 f"nothing. Regenerate it (make buildfile), or run make pcb.")
+                 f"nothing. Regenerate it first (sledgehammer buildfile).")
 
     if not a.workspace:
         _check_run_lock(baked or obj_dir)
@@ -542,7 +546,7 @@ def _cmd_run(args) -> int:
         conf["forceall"] = True
     if a.force and not a.forceall and not _dag_supports_forceall(dag_file):
         print(f"[sledgehammer] {dag_file} predates per-stage --force, so it still forces "
-              f"every stage this run executes; regenerate it (make buildfile) to force "
+              f"every stage this run executes; regenerate it (sledgehammer buildfile) to force "
               f"only {' '.join(actions)}.")
     if a.local:
         conf["local"] = True
@@ -625,6 +629,75 @@ def _cmd_run(args) -> int:
         return 0
 
 
+def _cmd_buildfile(args) -> int:
+    """Generate and register the DAG from the vlsi directory, as `make buildfile` does."""
+    import getpass
+    import re
+    target, rest = None, []
+    it = iter(args)
+    for x in it:
+        if x == "--target":
+            target = next(it, None)
+        elif x.startswith("--target="):
+            target = x.split("=", 1)[1]
+        else:
+            rest.append(x)
+    if not os.path.isfile("Makefile"):
+        sys.exit("[sledgehammer] no Makefile here; run buildfile from the vlsi directory.")
+    if not target:
+        with open("Makefile", errors="replace") as f:
+            text = f.read()
+
+        def has(name):
+            return re.search(rf"^{name}\s*::?(?![:=])", text, re.M)
+
+        target = "build" if has("build") and not has("buildfile") else "buildfile"
+    cmd = ["make", target, *rest]
+    env = _airflow_env()
+    # not realpath: the venv python is a symlink, and resolving it loses the venv
+    bindir = os.path.dirname(sys.executable)
+    env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
+    env["VIRTUAL_ENV"] = os.path.dirname(bindir)
+    if os.environ.get("SLEDGE_DRYRUN"):
+        print(f"[dryrun] buildfile  PATH={bindir}:...  ->  {' '.join(cmd)}")
+        return 0
+    dags_folder, _ = _dags_folder()
+    user = getpass.getuser()
+
+    def cwd_dags():
+        """{design: (obj_dir, stamp)} for this directory's DAGs; the stamp changes when a build relinks one."""
+        out = {}
+        for design, obj_dir in _dags_for_cwd(dags_folder, user):
+            link = os.path.join(dags_folder, f"sledgehammer_{design}_{user}.py")
+            try:
+                ls, st = os.lstat(link), os.stat(link)
+                out[design] = (obj_dir, (ls.st_ino, ls.st_mtime_ns, st.st_mtime_ns))
+            except OSError:
+                pass
+        return out
+
+    before = cwd_dags()
+    rc = subprocess.run(cmd, env=env).returncode
+    if rc != 0:
+        return rc
+    after = cwd_dags()
+    built = sorted(d for d, (_, stamp) in after.items() if before.get(d, (None, None))[1] != stamp)
+    if not built and after:
+        print("[sledgehammer] make generated no DAG; registered for this directory:")
+        for design, (obj_dir, _) in sorted(after.items()):
+            print(f"  sledgehammer_{design}_{user} (obj_dir {obj_dir})")
+        return 0
+    if not built:
+        print(f"[sledgehammer] make generated no DAG for this directory in {dags_folder}.\n"
+              f"  Check that vlsi.core.build_system is sledgehammer (not make), and that\n"
+              f"  vlsi.core.airflow_dags_folder, if set, is the folder Airflow reads.")
+        return 0
+    for design in built:
+        print(f"[sledgehammer] registered sledgehammer_{design}_{user} (obj_dir {after[design][0]})")
+    print("[sledgehammer] next: sledgehammer syn" + ("" if len(after) == 1 else f" -t {built[0]}"))
+    return 0
+
+
 def _cmd_status(args, list_only=False) -> int:
     import argparse
     import getpass
@@ -684,6 +757,13 @@ def main() -> int:
             from hammer.shell import sledgehammer_cancel
             return sledgehammer_cancel.main(args[1:])
         return _cmd_status(args[1:], list_only=(sub == "runs"))
+
+    if sub in ("buildfile", "build"):
+        loaded = _load_stack_env()
+        if loaded:
+            print(f"[sledgehammer] stack env from {loaded}")
+        os.environ.setdefault("AIRFLOW_HOME", REPO)
+        return _cmd_buildfile(args[1:])
 
     # Legacy make-target spelling: `sledgehammer par-RocketTile` is the same
     # request as `make par-RocketTile` was, and runs through the DAG.
