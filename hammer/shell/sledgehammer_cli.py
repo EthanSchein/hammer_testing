@@ -219,6 +219,28 @@ def _parse_target(word):
     return None
 
 
+def _airflow_upgrade_note():
+    """The note for a venv whose Airflow is older than the one scripts/uv_setup.sh installs, else None."""
+    import importlib.metadata
+    import re
+    import shlex
+    try:
+        installed = importlib.metadata.version("apache-airflow")
+        with open(os.path.join(REPO, "scripts", "uv_setup.sh")) as f:
+            pinned = re.search(r'AIRFLOW_VERSION="\$\{AIRFLOW_VERSION:-([0-9][0-9.]*)\}"', f.read()).group(1)
+    except Exception:
+        return None
+
+    def parts(version):
+        return tuple(int(n) for n in re.findall(r"\d+", version)[:3])
+
+    if parts(installed) >= parts(pinned):
+        return None
+    setup = shlex.quote(os.path.join(REPO, "scripts", "uv_setup.sh"))
+    return (f"[sledgehammer] this checkout uses Airflow {pinned}, but your venv has {installed}.\n"
+            f"  Stop sledgehammer (Ctrl-C), run {setup}, then start sledgehammer again.")
+
+
 # Well-known places a stack environment file may live, tried in order.
 STACK_ENV_HOME = os.path.expanduser("~/.sledgehammer/env.sh")
 
@@ -637,6 +659,9 @@ def main() -> int:
         return 0
 
     if sub in LAUNCH_WORDS:
+        note = _airflow_upgrade_note()
+        if note:
+            print(note, flush=True)
         if sub in ("lite", "full"):
             os.environ["SLEDGE_LITE"] = "1" if sub == "lite" else "0"
         # venv.sh sets up the BWRC tool environment that the workers inherit.

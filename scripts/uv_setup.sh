@@ -81,8 +81,8 @@ PG_LOCAL="$HOME/pg_local"
 LIBNSL_LOCAL="$HOME/libnsl_local"
 SECRETS_DIR="$REPO/.sledgehammer"
 SECRETS_FILE="${SLEDGE_SECRETS_FILE:-$SECRETS_DIR/airflow-secrets.env.gpg}"
-AIRFLOW_VERSION="${AIRFLOW_VERSION:-3.1.0}"
-EDGE3_VERSION="${EDGE3_VERSION:-1.3.0}"
+AIRFLOW_VERSION="${AIRFLOW_VERSION:-3.1.8}"
+EDGE3_VERSION="${EDGE3_VERSION:-3.1.0}"
 PYVER="${PYVER:-3.11}"
 # Must match SLANG_VERSION in hammer/vlsi/rtl_check.py: the RTL fingerprint is a
 # function of slang's AST JSON, and rtl_check refuses a version it was not pinned
