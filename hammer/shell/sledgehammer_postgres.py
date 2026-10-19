@@ -94,11 +94,12 @@ def _err(message: str) -> None:
 
 
 def _where(user, host, port, db) -> str:
-    return f"{user}@{_server(host, port)}/{db}"
+    return f"{user}@{_server(host, port)}/{db}" if user else f"{_server(host, port)}/{db}"
 
 
 def _conn_where(conn: Dict) -> str:
-    return _where(conn.get("user"), conn.get("host"), conn.get("port"), conn.get("dbname"))
+    port = conn.get("port") or pd_store.libpq_default_port()
+    return _where(conn.get("user"), conn.get("host"), port, conn.get("dbname"))
 
 
 def _fields_where(fields: Dict) -> str:
@@ -575,7 +576,7 @@ def _plan(session: _Session, new: Target, takes_over: Optional[str] = None) -> O
               f"to choose, and writes {session.target_file}.")
     _warn(session, after)
     left = []
-    airflow_was = (old.get("host"), old.get("port"), old.get("dbname"))
+    airflow_was = (old.get("host"), old.get("port") or pd_store.libpq_default_port(), old.get("dbname"))
     if old and (takes_over or _moved(airflow_was, (new.host, new.port, new.airflow_db))):
         left.append(("DAG run history", "stays", airflow_was))
     cache_was = tuple(cache[field][0] for field in ("host", "port", "dbname"))
