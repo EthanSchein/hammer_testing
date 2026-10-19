@@ -411,7 +411,8 @@ def _cmd_make_dag(args: argparse.Namespace) -> int:
     )
     obj_dir.mkdir(parents=True, exist_ok=True)
 
-    dags_folder = Path(args.dags_folder) if args.dags_folder else (repo_root / "dags")
+    from hammer.shell.dags_folder import resolve_dags_folder
+    dags_folder = Path(args.dags_folder or resolve_dags_folder()[0])
 
     env_conf = e2e / "configs-env" / f"{args.env}-env.yml"
     pdk_conf = e2e / "configs-pdk" / f"{args.pdk}.yml"
@@ -1506,7 +1507,9 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Where to write the generated DAG. "
                             "Defaults to build-<pdk>-<tools>/<design> under e2e/.")
     p_dag.add_argument("--dags-folder", default=None,
-                       help="Where to symlink the DAG. Defaults to <repo>/dags.")
+                       help="Where to symlink the DAG. Defaults to the folder `sledgehammer run` "
+                            "looks in: $HAMMER_DAGS_FOLDER, $AIRFLOW__CORE__DAGS_FOLDER, airflow.cfg, "
+                            "then $AIRFLOW_HOME/dags.")
     p_dag.add_argument("--pdk", default="sky130")
     p_dag.add_argument("--tools", default="cm")
     p_dag.add_argument("--env", default="bwrc")
