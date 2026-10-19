@@ -133,7 +133,8 @@ else
         echo "         Install it yourself and point \$SLANG_BIN at it, e.g."
         echo "           conda install conda-forge::slang-verilog"
         echo "         or build from https://github.com/MikePopoloski/slang."
-        echo "         RTL fingerprinting will fail until then; nothing else is affected."
+        echo "         Until then the RTL fingerprint falls back to a byte hash of the RTL"
+        echo "         files and warns: comment and whitespace edits count as RTL changes."
     else
         mkdir -p "$REPO/tools/slang"
         curl -fsSL -o "$REPO/tools/slang/$_slang_asset" \
@@ -308,10 +309,9 @@ fi
 
 if [ -n "$_lab" ]; then
 step "verify hammer-vlsi runs"
-# Judged by its OUTPUT, not its exit status: hammer-vlsi looks up
-# hammer-shell-test by name, and when the venv's scripts are not on PATH it
-# prints one line to stderr and exits 0 having done nothing. So the exit code
-# proves nothing; the usage block does.
+# Judged by its OUTPUT: hammer-vlsi looks up hammer-shell-test by name, and when
+# the venv's scripts are not on PATH it prints one line to stderr and exits 1
+# before any usage, so the usage block is the proof that it ran.
 # Judge the WHOLE output, not the first line. stderr is unbuffered and stdout is
 # block-buffered on a pipe, so a stray warning could otherwise become "line 1"
 # and fail a working install. grep for the usage line anywhere in the output.
@@ -377,7 +377,7 @@ elif [ ! -t 0 ]; then
 else
     read -rp "  set up Postgres secrets now? [Y/n]: " DO_SECRETS
     if [ "${DO_SECRETS,,}" = "n" ]; then
-        echo "  skipped -- Airflow won't start until these exist."
+        echo "  skipped. Airflow won't start until these exist."
         echo "  create them later: ./scripts/sledge-secrets-create.sh"
     else
         "$REPO/scripts/sledge-secrets-create.sh"
@@ -395,19 +395,25 @@ fi
 step "done"
 if [ -n "$_lab" ]; then
 cat <<EOF
-Hammer is installed in $REPO/.venv and its scripts are on PATH for new shells.
+Hammer is installed in $REPO/.venv and its scripts are on PATH for new bash
+shells, through ~/.bashrc. zsh, csh, or a login shell that skips ~/.bashrc,
+needs the same PATH entry in its own startup file.
 For this shell:
     export PATH="\$PATH:$REPO/.venv/bin"
 Check it works with:
     hammer-vlsi -h
-If that prints nothing at all, PATH is wrong: hammer-vlsi exits 0 without doing
-anything when its scripts are off PATH. Silence is failure, not success.
+If it prints "hammer-shell does not appear to be on the path" instead of its
+usage, PATH is wrong: open a new shell or run the export above.
 EOF
 else
 cat <<EOF
 Setup complete. Open a new shell, then start the stack from any directory with:
     sledgehammer
-(first launch runs the DB migrations automatically.) Run flows with
-'sledgehammer syn', 'sledgehammer par', ..., inside or outside Chipyard.
+(first launch runs the DB migrations automatically.) Register a design's DAG
+once with 'sledgehammer buildfile' from its vlsi directory, then run flows there
+with 'sledgehammer syn', 'sledgehammer par', ..., or from anywhere with
+'sledgehammer syn -t <design>'.
+PATH was added to ~/.bashrc only. If your shell does not read it (zsh, csh, or
+a login shell that skips ~/.bashrc), add $HOME/.local/bin to PATH yourself.
 EOF
 fi
