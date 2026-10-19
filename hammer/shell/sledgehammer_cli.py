@@ -55,9 +55,11 @@ Set SLEDGE_DRYRUN=1 to print what it would run instead of running it.
 """
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
+from typing import NoReturn
 
 # hammer/shell/sledgehammer_cli.py -> repo root is three levels up.
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -69,6 +71,87 @@ HELP_WORDS = {"-h", "--help", "help"}
 
 def _venv_bin(name: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(sys.executable)), name)
+
+
+DELEGATED_ENV = "SLEDGE_DELEGATED"
+
+
+def _owned_by_me(path: str) -> bool:
+    """Owned by the invoking user and not writable by others, so nobody else can plant code there."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return st.st_uid == os.getuid() and not st.st_mode & stat.S_IWOTH
+
+
+def _is_checkout(path: str) -> bool:
+    """A SledgeHammer checkout of ours with the full stack set up: the launcher, plus sledgehammer and airflow in its .venv."""
+    bindir = os.path.join(path, ".venv", "bin")
+    exe = os.path.join(bindir, "sledgehammer")
+    return (os.path.isfile(os.path.join(path, "scripts", "airflow-standalone-ldap.py"))
+            and all(os.path.isfile(p) and os.access(p, os.X_OK) for p in (exe, os.path.join(bindir, "airflow")))
+            and all(_owned_by_me(p) for p in (path, bindir, exe)))
+
+
+def _checkout_for_cwd() -> str:
+    """The checkout the cwd is in (itself, a workspace's hammer/, or Chipyard's vlsi/hammer), else REPO.
+
+    The hammer/ and vlsi/hammer/ children only count below $HOME (or below / outside it),
+    so a checkout sitting directly in ~ does not capture every directory under it.
+    """
+    try:
+        level = os.path.realpath(os.getcwd())
+    except OSError:
+        return REPO
+    home = os.path.realpath(os.path.expanduser("~"))
+    floor = home if (level + os.sep).startswith(home + os.sep) else os.sep
+    while True:
+        cands = [level]
+        if level != floor and (level + os.sep).startswith(floor.rstrip(os.sep) + os.sep):
+            cands += [os.path.join(level, "hammer"), os.path.join(level, "vlsi", "hammer")]
+        for cand in cands:
+            if _is_checkout(cand):
+                return cand
+        parent = os.path.dirname(level)
+        if parent == level:
+            return REPO
+        level = parent
+
+
+def _delegate_to_checkout_venv() -> None:
+    """Re-exec into the chosen checkout's venv when this copy runs on another python (a conda env, another checkout)."""
+    if os.environ.pop(DELEGATED_ENV, None):
+        return
+    venv = os.path.join(_checkout_for_cwd(), ".venv")
+    exe = os.path.join(venv, "bin", "sledgehammer")
+    if not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+        return
+    if os.path.realpath(sys.prefix) == os.path.realpath(venv):
+        return
+    os.environ[DELEGATED_ENV] = "1"
+    try:
+        os.execv(exe, [exe] + sys.argv[1:])
+    except OSError as e:
+        os.environ.pop(DELEGATED_ENV, None)
+        print(f"[sledgehammer] could not hand off to {exe} ({e}); running this copy instead.", file=sys.stderr)
+
+
+def _no_airflow_exit() -> NoReturn:
+    sys.exit(f"[sledgehammer] there is no airflow next to this copy's python ({sys.executable}),\n"
+             f"  which belongs to {REPO}. Another sledgehammer on PATH may be shadowing the one\n"
+             f"  setup installed; check with: type -a sledgehammer")
+
+
+def _note_foreign_airflow_home() -> None:
+    """Say so when an exported AIRFLOW_HOME is a different checkout, whose DAGs this run would use."""
+    home = os.environ.get("AIRFLOW_HOME")
+    if home and os.path.isfile(os.path.join(home, "scripts", "airflow-standalone-ldap.py")) \
+            and os.path.realpath(home) != os.path.realpath(REPO):
+        print(f"[sledgehammer] note: AIRFLOW_HOME is {home}, a different checkout than this one ({REPO}),\n"
+              f"  so its airflow.cfg and DAG folder are used. To use this checkout's, unset AIRFLOW_HOME\n"
+              f"  where it is set (your shell or your stack env file).",
+              file=sys.stderr)
 
 
 def _load_secrets() -> None:
@@ -155,8 +238,11 @@ def _airflow_env():
 
 
 def _airflow(*a, capture=True):
-    r = subprocess.run([_venv_bin("airflow"), *a],
-                       capture_output=capture, text=True, env=_airflow_env())
+    try:
+        r = subprocess.run([_venv_bin("airflow"), *a],
+                           capture_output=capture, text=True, env=_airflow_env())
+    except FileNotFoundError:
+        _no_airflow_exit()
     return r.returncode, (r.stdout or ""), (r.stderr or "")
 
 
@@ -736,6 +822,7 @@ def _cmd_status(args, list_only=False) -> int:
 
 
 def main() -> int:
+    _delegate_to_checkout_venv()
     args = sys.argv[1:]
     sub = args[0] if args else ""
 
@@ -749,6 +836,7 @@ def main() -> int:
         loaded = _load_stack_env()
         if loaded:
             print(f"[sledgehammer] stack env from {loaded}")
+        _note_foreign_airflow_home()
         os.environ.setdefault("AIRFLOW_HOME", REPO)
         _load_secrets()
         if sub == "run":
@@ -774,6 +862,7 @@ def main() -> int:
             loaded = _load_stack_env()
             if loaded:
                 print(f"[sledgehammer] stack env from {loaded}")
+            _note_foreign_airflow_home()
             os.environ.setdefault("AIRFLOW_HOME", REPO)
             _load_secrets()
             fwd = [stage]
@@ -793,6 +882,7 @@ def main() -> int:
 
     if sub in HELP_WORDS:
         sys.stdout.write(__doc__)
+        print(f"\nthis copy: {REPO} (python {sys.executable})")
         return 0
 
     if sub in LAUNCH_WORDS:
@@ -823,7 +913,10 @@ def main() -> int:
               f"(secrets loaded)  ->  {' '.join(cmd)}")
         return 0
     _load_secrets()
-    os.execve(cmd[0], cmd, _airflow_env())
+    try:
+        os.execve(cmd[0], cmd, _airflow_env())
+    except FileNotFoundError:
+        _no_airflow_exit()
 
 
 if __name__ == "__main__":
