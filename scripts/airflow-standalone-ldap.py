@@ -34,8 +34,10 @@ import json
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -495,8 +497,44 @@ from airflow.executors.executor_loader import ExecutorLoader
 from airflow.executors import executor_constants
 
 
+def _full_stop_timeout() -> int:
+    """Seconds the full stack gets to stop after Ctrl-C before the rest is killed: SLEDGE_FULL_STOP_TIMEOUT, else 30."""
+    val = os.environ.get("SLEDGE_FULL_STOP_TIMEOUT", "").strip()
+    return int(val) if val.isdigit() else 30
+
+
+def _join(threads, seconds) -> list:
+    """Wait up to seconds in all for the threads to finish; returns those still running."""
+    deadline = time.monotonic() + seconds
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    return [thread for thread in threads if thread.is_alive()]
+
+
+def _stack_pids(roots) -> set:
+    """Processes under the roots still this launcher's children, plus the rest of its process group if it leads one."""
+    me = os.getpid()
+    try:
+        ps = subprocess.Popen(["ps", "-A", "-o", "pid=,ppid=,pgid="], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True)
+        out = ps.communicate(timeout=10)[0]
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    rows = [tuple(map(int, line.split())) for line in out.splitlines() if len(line.split()) == 3]
+    found = {pid for pid, ppid, _ in rows if ppid == me and pid in roots}
+    if os.getpgrp() == me:
+        found |= {pid for pid, _, pgid in rows if pgid == me and pid not in (me, ps.pid)}
+    while True:
+        more = {pid for pid, ppid, _ in rows if ppid in found} - found
+        if not more:
+            return found
+        found |= more
+
+
 class HammerStandalone(StandaloneCommand):
-    """StandaloneCommand that says where the UI login is and how to reach the UI."""
+    """StandaloneCommand that says where to log in and how to reach the UI, and stops in bounded time on Ctrl-C."""
+
+    _stopper = None
 
     def find_user_info(self):
         self.print_output("standalone", _login_line())
@@ -525,6 +563,45 @@ class HammerStandalone(StandaloneCommand):
             self.print_output("standalone", f"pgAdmin : {pg_url}")
         fwd = f"-L {api_port}:localhost:{api_port}" + (f" -L {pg_port}:localhost:{pg_port}" if pg_port else "")
         self.print_output("standalone", _tunnel_line(fwd))
+
+    def run(self):
+        signal.signal(signal.SIGINT, self._interrupted)
+        super().run()
+
+    def _interrupted(self, signum, frame):
+        """Let the components stop on the first Ctrl-C, which reached them too, before standalone signals them again.
+
+        Another Ctrl-C, or the stopper, starts that shutdown.
+        """
+        if self._stopper is None and self.subcommands:
+            self._stopper = threading.Thread(target=self._stop_components, daemon=True)
+            self._stopper.start()
+            return
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        raise KeyboardInterrupt
+
+    def _stop_components(self):
+        """Wait for the components to exit, kill what is left after the timeout, then start standalone's shutdown.
+
+        A scheduler signalled twice can wait on its idle workers for ever, so the timeout is needed.
+        """
+        commands = list(self.subcommands.values())
+        timeout = _full_stop_timeout()
+        stuck = _join(commands, timeout)
+        if stuck:
+            for command in stuck:
+                self.print_output("standalone", f"{command.name} did not stop within {timeout}s; killing it")
+            roots = {command.process.pid for command in commands if hasattr(command, "process")}
+            pids = set()
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                pids |= _stack_pids(roots)
+                for pid in pids:
+                    try:
+                        os.kill(pid, sig)
+                    except OSError:
+                        pass
+                _join(commands, 5)
+        os.kill(os.getpid(), signal.SIGINT)
 
 
 def _effective_api_port() -> int:
