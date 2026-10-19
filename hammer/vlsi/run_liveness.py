@@ -253,7 +253,8 @@ def check_run_lock(obj_dir, held, age, stale_after=STALE_SECONDS, user=None):
     v = run_verdict(held.get("dag_id"), run_id, held.get("host"), stale_after)
     # Another user's processes cannot be listed from here, so their lock is never provably dead.
     other = _other_owner(os.path.join(obj_dir, RUN_LOCK_NAME))
-    if other and v.kind in (FINISHED, STALE):
+    pending = [h for h in held.get("pending_hosts") or [] if h != this_host()]
+    if (other or pending) and v.kind in (FINISHED, STALE):
         v = v._replace(kind=BUSY)
     if v.activity is not None:
         state = v.activity.state
@@ -261,7 +262,7 @@ def check_run_lock(obj_dir, held, age, stale_after=STALE_SECONDS, user=None):
         state = "unknown" if v.kind == UNKNOWN else "not in the Airflow database"
     sign = last_sign_of_life(v.activity, stale_after)
     cmd = f"sledgehammer cancel {run_id}"
-    if v.activity is None:
+    if pending or v.activity is None:
         cmd += f" --obj_dir {shlex.quote(str(obj_dir))}"
     if v.kind == FINISHED:
         return FINISHED, f"holder {run_id!r} is terminal ({state}); taking over the stale lock."
@@ -296,11 +297,18 @@ def check_run_lock(obj_dir, held, age, stale_after=STALE_SECONDS, user=None):
             lines.append(f"    {what} on host {t.hostname}, which cannot be checked from here")
         if other:
             lines.append(f"    anything it runs as {other}, whose processes cannot be checked from here")
+        for h in pending:
+            lines.append(f"    what it left on host {h}, where  {cmd}  has not run yet")
     if v.kind == UNKNOWN:
         lines.append(f"  could not check whether it is still alive: {v.error}")
-    stop = (f"  Only {other} can stop that run and free this directory, with:  {cmd}" if other
-            else f"  To stop that run and free this directory:  {cmd}")
-    lines += [second, stop]
+    if other:
+        stop = [f"  Only {other} can stop that run and free this directory, with:  {cmd}"]
+    elif pending:
+        stop = [f"  To free this directory, run  {cmd}  on {', '.join(pending)}.",
+                f"  If {', '.join(pending)} is gone for good:  {cmd} --free"]
+    else:
+        stop = [f"  To stop that run and free this directory:  {cmd}"]
+    lines += [second, *stop]
     return v.kind, "\n".join(lines)
 
 

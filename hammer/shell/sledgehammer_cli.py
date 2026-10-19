@@ -36,6 +36,9 @@ Flow commands -- hammer's flags, the DAG as plumbing, no GUI required:
 
   sledgehammer status --design Top          latest run, per-task table
   sledgehammer runs --design Top            recent runs
+  sledgehammer cancel                       stop the run holding this build: mark it failed,
+                                            stop its processes here and free its build folder
+  sledgehammer cancel <run_id> --yes        stop that run, without asking first
 
 Which Postgres Airflow and the cache use:
 
@@ -427,6 +430,54 @@ def _check_run_lock(obj_dir):
         print(f"[sledgehammer] {text}")
 
 
+def _find_build(obj_dir_arg, top, user, dags_folder, dags_src):
+    """(design, obj_dir, dag_id, dag_file, baked OBJ_DIR) of the build the flags or the cwd name, or exit."""
+    # A registered DAG already carries its OBJ_DIR and design, baked in when it
+    # was generated -- running one needs no Makefile and no working directory.
+    # Explicit flags win; otherwise the DAG that builds under, or was generated
+    # from, the cwd is the one meant.
+    obj_dir = os.path.abspath(obj_dir_arg) if obj_dir_arg else None
+    design = top
+    if design and not obj_dir:
+        named = os.path.join(dags_folder, f"sledgehammer_{design}_{user}.py")
+        if not os.path.exists(named):
+            _no_dag_exit(design, named, dags_src)
+        got = _dag_obj_dir(named)
+        if got:
+            obj_dir, src = got, "the registered DAG"
+    if not obj_dir and not design:
+        hits = _dags_for_cwd(dags_folder, user)
+        if len(hits) > 1:
+            sys.exit(f"[sledgehammer] more than one registered DAG belongs to this directory: "
+                     f"{', '.join(d for d, _ in hits)}. Pick one with -t <design>.")
+        if hits:
+            design, obj_dir, src = hits[0][0], hits[0][1], "the registered DAG"
+    if not obj_dir:
+        obj_dir, src = _infer_obj_dir()
+        if not obj_dir:
+            sys.exit("[sledgehammer] could not work out obj_dir. Pass "
+                     "--obj_dir, or -t <top> for a DAG that is already "
+                     "registered, or run from the vlsi directory.\n"
+                     "  No DAG yet? Generate it first: cd <vlsi dir> && make buildfile")
+        obj_dir = os.path.abspath(obj_dir)
+    if not obj_dir_arg:
+        print(f"[sledgehammer] obj_dir from {src}: {obj_dir}")
+    design = design or os.path.basename(obj_dir.rstrip("/"))
+    dag_id = f"sledgehammer_{design}_{user}"
+    dag_file = os.path.join(dags_folder, f"{dag_id}.py")
+
+    if not os.path.exists(dag_file):
+        _no_dag_exit(design, dag_file, dags_src)
+    baked = _dag_obj_dir(dag_file)
+    if baked and os.path.realpath(baked) != os.path.realpath(obj_dir) \
+            and os.path.isfile(os.path.join(obj_dir, "hammer_dag.py")):
+        sys.exit(
+            f"[sledgehammer] {dag_id} is registered for {baked}, not {obj_dir}.\n"
+            f"  Both builds are named {design}, and only the one generated last is registered.\n"
+            f"  Regenerate the DAG from {obj_dir} (make buildfile) to switch to it.")
+    return design, obj_dir, dag_id, dag_file, baked
+
+
 def _cmd_run(args) -> int:
     import argparse
     import getpass
@@ -475,49 +526,7 @@ def _cmd_run(args) -> int:
     user = getpass.getuser()
     dags_folder, dags_src = _dags_folder()
 
-    # A registered DAG already carries its OBJ_DIR and design, baked in when it
-    # was generated -- running one needs no Makefile and no working directory.
-    # Explicit flags win; otherwise the DAG that builds under, or was generated
-    # from, the cwd is the one meant.
-    obj_dir = os.path.abspath(a.obj_dir) if a.obj_dir else None
-    design = a.top
-    if design and not obj_dir:
-        named = os.path.join(dags_folder, f"sledgehammer_{design}_{user}.py")
-        if not os.path.exists(named):
-            _no_dag_exit(design, named, dags_src)
-        got = _dag_obj_dir(named)
-        if got:
-            obj_dir, src = got, "the registered DAG"
-    if not obj_dir and not design:
-        hits = _dags_for_cwd(dags_folder, user)
-        if len(hits) > 1:
-            sys.exit(f"[sledgehammer] more than one registered DAG belongs to this directory: "
-                     f"{', '.join(d for d, _ in hits)}. Pick one with -t <design>.")
-        if hits:
-            design, obj_dir, src = hits[0][0], hits[0][1], "the registered DAG"
-    if not obj_dir:
-        obj_dir, src = _infer_obj_dir()
-        if not obj_dir:
-            sys.exit("[sledgehammer] could not work out obj_dir. Pass "
-                     "--obj_dir, or -t <top> for a DAG that is already "
-                     "registered, or run from the vlsi directory.\n"
-                     "  No DAG yet? Generate it first: cd <vlsi dir> && make buildfile")
-        obj_dir = os.path.abspath(obj_dir)
-    if not a.obj_dir:
-        print(f"[sledgehammer] obj_dir from {src}: {obj_dir}")
-    design = design or os.path.basename(obj_dir.rstrip("/"))
-    dag_id = f"sledgehammer_{design}_{user}"
-    dag_file = os.path.join(dags_folder, f"{dag_id}.py")
-
-    if not os.path.exists(dag_file):
-        _no_dag_exit(design, dag_file, dags_src)
-    baked = _dag_obj_dir(dag_file)
-    if baked and os.path.realpath(baked) != os.path.realpath(obj_dir) \
-            and os.path.isfile(os.path.join(obj_dir, "hammer_dag.py")):
-        sys.exit(
-            f"[sledgehammer] {dag_id} is registered for {baked}, not {obj_dir}.\n"
-            f"  Both builds are named {design}, and only the one generated last is registered.\n"
-            f"  Regenerate the DAG from {obj_dir} (make buildfile) to switch to it.")
+    design, obj_dir, dag_id, dag_file, baked = _find_build(a.obj_dir, a.top, user, dags_folder, dags_src)
 
     if "pcb" in actions and not _dag_has_pcb(dag_file):
         sys.exit(f"[sledgehammer] {dag_file} predates the pcb stage, so asking it for pcb would run "
@@ -644,7 +653,7 @@ def main() -> int:
 
     # Flow commands compose with an existing stack (stack_env, iris-db, ...):
     # respect AIRFLOW_HOME when the caller set one, default to the checkout.
-    if sub in ("run", "status", "runs"):
+    if sub in ("run", "status", "runs", "cancel"):
         loaded = _load_stack_env()
         if loaded:
             print(f"[sledgehammer] stack env from {loaded}")
@@ -652,6 +661,9 @@ def main() -> int:
         _load_secrets()
         if sub == "run":
             return _cmd_run(args[1:])
+        if sub == "cancel":
+            from hammer.shell import sledgehammer_cancel
+            return sledgehammer_cancel.main(args[1:])
         return _cmd_status(args[1:], list_only=(sub == "runs"))
 
     # Legacy make-target spelling: `sledgehammer par-RocketTile` is the same
