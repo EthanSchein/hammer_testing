@@ -50,6 +50,7 @@ def _launch(tmp_path, lite: str) -> str:
     env = {"HOME": str(home), "USER": "alice", "PATH": os.environ["PATH"], "SLEDGE_NO_PGADMIN": "1",
            "SLEDGE_LITE": lite, "SLEDGE_PORT": str(fake_postgres.free_port()),
            "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN": f"sqlite:///{tmp_path}/airflow.db",
+           "AIRFLOW__API_AUTH__JWT_SECRET": "jwt", "AIRFLOW__API__SECRET_KEY": "key",
            "PYTHONPATH": os.pathsep.join((str(stubs), str(fake_postgres.REPO)))}
     res = subprocess.run([sys.executable, str(repo / "scripts" / "airflow-standalone-ldap.py")],
                          capture_output=True, text=True, timeout=180, cwd=str(home), env=env)

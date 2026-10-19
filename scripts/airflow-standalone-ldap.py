@@ -30,6 +30,7 @@ if os.path.exists(_venv_py) and os.path.realpath(_venv_py) != os.path.realpath(s
 if os.path.isdir(os.path.dirname(_venv_py)):
     os.environ["PATH"] = os.path.dirname(_venv_py) + os.pathsep + os.environ.get("PATH", "")
 
+import configparser
 import json
 import re
 import secrets
@@ -810,7 +811,31 @@ def _lite_main():
     os.execvp("bash", ["bash", LITE_SUPERVISOR])
 
 
+def _refuse_without_shared_keys() -> None:
+    """Exit unless the keys this stack's Airflow processes must share are set, in the environment or airflow.cfg."""
+    cfg = configparser.ConfigParser(interpolation=None)
+    try:
+        cfg.read(os.environ.get("AIRFLOW_CONFIG") or os.path.join(os.environ.get("AIRFLOW_HOME", ""), "airflow.cfg"))
+    except (configparser.Error, UnicodeDecodeError):
+        pass
+    # Tasks need jwt_secret to reach the api-server; only the full stack runs log servers, which check secret_key.
+    keys = {"AIRFLOW__API_AUTH__JWT_SECRET": (("api_auth", "jwt_secret"), ("api_auth", "jwt_private_key_path"))}
+    if not _lite():
+        keys["AIRFLOW__API__SECRET_KEY"] = (("api", "secret_key"), ("webserver", "secret_key"))
+    missing = [name for name, options in keys.items()
+               if not any(os.environ.get(f"AIRFLOW__{section}__{key}{end}".upper())
+                          or cfg.get(section, key + end, fallback="")
+                          for section, key in options for end in ("", "_cmd", "_secret"))]
+    if missing:
+        one = len(missing) == 1
+        sys.exit(f"[secrets] ERROR: {' and '.join(missing)} {'is' if one else 'are'} not set in the environment or "
+                 f"airflow.cfg, so each Airflow process would make up its own and they would reject each other's "
+                 f"requests with 403. Run \"source ~/.sledgehammer/env.sh\", or add {'it' if one else 'them'} to the "
+                 f"encrypted secrets that venv.sh loads, then start sledgehammer again.")
+
+
 def main():
+    _refuse_without_shared_keys()
     if _lite():
         return _lite_main()
     _refuse_if_port_taken(_configure_port())

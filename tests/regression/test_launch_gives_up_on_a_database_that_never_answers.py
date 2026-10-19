@@ -81,6 +81,7 @@ def launch(tmp_path, port, **env):
                              env={"HOME": str(home), "USER": "alice", "PATH": os.environ.get("PATH", ""),
                                   "PYTHONPATH": str(fake_postgres.REPO), "CALLS": str(calls),
                                   "SLEDGE_NO_PGADMIN": "1", "SLEDGE_PORT": str(fake_postgres.free_port()),
+                                  "AIRFLOW__API_AUTH__JWT_SECRET": "jwt", "AIRFLOW__API__SECRET_KEY": "key",
                                   "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN":
                                       f"postgresql+psycopg2://alice:pw@127.0.0.1:{port}/airflow_alice", **env})
     except subprocess.TimeoutExpired:

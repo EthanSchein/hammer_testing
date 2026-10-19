@@ -93,6 +93,7 @@ def _launch(tmp_path, port=None, launch_env=None, **env):
     full_env = {"HOME": str(home), "USER": "alice", "PATH": os.environ["PATH"], "SLEDGE_NO_PGADMIN": "1",
                 "LITE_ENV_DUMP": str(dump), "STUB_COUNT": str(tmp_path / "heartbeat-checks"),
                 "AIRFLOW__DATABASE__SQL_ALCHEMY_CONN": f"sqlite:///{tmp_path}/airflow.db",
+                "AIRFLOW__API_AUTH__JWT_SECRET": "jwt", "AIRFLOW__API__SECRET_KEY": "key",
                 "PYTHONPATH": os.pathsep.join((str(stubs), str(fake_postgres.REPO)))}
     if port is not None:
         full_env["SLEDGE_PORT"] = str(port)
