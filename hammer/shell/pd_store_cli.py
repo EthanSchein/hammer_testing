@@ -51,7 +51,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -190,7 +189,6 @@ def _cmd_stage_pull(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
-        shutil.rmtree(rundir)
     rundir.parent.mkdir(parents=True, exist_ok=True)
     pd_store.untar_to_directory(data, rundir.parent, as_name=rundir.name)
     print(f"sha256={sha} stage={stored_stage} extracted to {rundir}")
