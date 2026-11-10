@@ -256,13 +256,16 @@ never fires.
 
 ### Design setup and housekeeping
 
-`design-register` `augment` `make-dag` · `init` `reap` `project-set`
+`design-register` `augment` `make-dag` `register-projects` · `init` `reap` `project-set`
 `cache-events-clear` `wipe-blobs` `wipe-master` `wipe-artifacts` `wipe-all`
 
 ```bash
 studio init            # create the schema on a fresh database
 studio reap            # list EDA processes left by dead runs (--kill to end them)
+studio register-projects   # each src/original/<project> -> a design and its DAG (make designs in e2e/)
 ```
+
+`register-projects` is described in [EECS151_PROJECTS.md](EECS151_PROJECTS.md).
 
 ## Related documents
 

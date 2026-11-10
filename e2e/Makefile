@@ -55,10 +55,18 @@ $(HAMMER_D_MK): $(SRAM_CONF)
 	$(HAMMER_DRIVER) --obj_dir $(OBJ_DIR) -e $(ENV_YML) $(HAMMER_EXTRA_ARGS) build
 endif
 
+# designs works on every project, not $(design): don't build that design's hammer.d just to include it
+ifeq ($(filter designs,$(MAKECMDGOALS)),)
 -include $(HAMMER_D_MK)
+endif
 
+# Register each project under ../src/original as configs-design/<project>/ and link its DAG
+# (project=<name> for just one). See readme_documents/EECS151_PROJECTS.md.
 # the checkout's own venv when there is one, so this works without activating it
 STUDIO              ?= $(firstword $(wildcard $(vlsi_dir)/../.venv/bin/studio) studio)
+designs:
+	$(STUDIO) register-projects --env $(env) --pdk $(pdk) --tools $(tools) $(if $(project),--project $(project))
+.PHONY: designs
 
 $(SRAM_CONF) srams:
 	$(HAMMER_DRIVER) --obj_dir $(OBJ_DIR) -e $(ENV_YML) $(foreach conf, $(PROJ_YMLS), -p $(conf)) sram_generator

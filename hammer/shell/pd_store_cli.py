@@ -37,6 +37,8 @@ Design registration (turn RTL into Hammer configs without hand-writing YAML):
     design-register --name <n> --top-module <m> --rtl <paths...> --clock-ns <c>
     augment --design <n>            (fill in SRAM stuff for an existing design)
     make-dag --design <n>           (generate the Airflow DAG and link it in)
+    register-projects [--project <p>]
+                                    (every project under src/original -> a design + its DAG)
 
 `<path>` defaults to ./master_database.json when omitted.
 
@@ -483,7 +485,10 @@ def _cmd_make_dag(args: argparse.Namespace) -> int:
     for e in errs:
         print(f"WARNING: {e}", file=sys.stderr)
 
-    dag_label = args.dag_id or f"Hammer_{design}"
+    # as build_airflow_dag names it
+    import getpass
+    user = os.environ.get("USER") or getpass.getuser()
+    dag_label = re.sub(r"[^A-Za-z0-9_.-]", "_", args.dag_id or f"sledgehammer_{obj_dir.name}_{user}")
     if dep_graph:
         leaves = sorted(m for m, edges in dep_graph.items() if not edges[1])
         non_leaves = sorted(m for m, edges in dep_graph.items() if edges[1])
@@ -501,6 +506,117 @@ def _cmd_make_dag(args: argparse.Namespace) -> int:
           file=sys.stderr)
     print(f"register it within a few minutes as {dag_label}.", file=sys.stderr)
     return 0
+
+
+def _print_registration(reg, repo_root: Path) -> None:
+    """What register-projects found and wrote for one project."""
+    def rel(p) -> str:
+        return os.path.relpath(p, reg.project_dir)
+    print("  configs: " + ", ".join(f"{rel(p)} ({role})" for role, p in reg.configs.items()), file=sys.stderr)
+    unused = f", {len(reg.unused_files)} unused by {reg.top_module}: " + ", ".join(
+        rel(f) for f in reg.unused_files) if reg.unused_files else ""
+    print(f"  top module {reg.top_module}; {len(reg.input_files)} RTL files{unused}", file=sys.stderr)
+    clocks = ", ".join(f"{c.get('name')} {c.get('period')}" for c in reg.clocks if isinstance(c, dict))
+    print(f"  clocks: {clocks or 'none'}", file=sys.stderr)
+    srams = ", ".join(f"{len(paths)} x {name}" for name, paths in reg.srams.items())
+    print(f"  SRAMs: {srams or 'none'}", file=sys.stderr)
+    print(f"  {len(reg.dropped)} project settings not carried over (registration.json lists each and why)",
+          file=sys.stderr)
+    where = os.path.relpath(reg.design_dir, repo_root)
+    print(f"  {where}: " + (f"wrote {', '.join(reg.written)}" if reg.written else "unchanged"),
+          file=sys.stderr)
+    for note in reg.notes:
+        print(f"  note: {note}", file=sys.stderr)
+    for warning in reg.warnings:
+        print(f"  WARNING: {warning}", file=sys.stderr)
+
+
+def _cmd_register_projects(args: argparse.Namespace) -> int:
+    """
+    Register every project under src/original as a design, then generate and
+    link its DAG with make-dag. hammer/shell/design_register.py does the
+    registering. A project that fails is reported and skipped; the others
+    still register, and the exit status says whether any failed.
+    """
+    import getpass
+    import traceback
+    from hammer.logging import HammerVLSILogging
+    from hammer.shell import design_register
+
+    repo_root = Path(args.repo_root).resolve() if args.repo_root else design_register.REPO_ROOT
+    projects_dir = Path(args.src).absolute() if args.src else repo_root / "src" / "original"
+    try:
+        projects = design_register.discover_projects(projects_dir)
+    except design_register.RegistrationError as e:
+        print(f"register-projects: {e}", file=sys.stderr)
+        return 2
+    try:
+        variants = design_register.discover_variants(projects_dir)
+    except design_register.RegistrationError as e:
+        print(f"register-projects: {e}", file=sys.stderr)
+        return 2
+    # (project dir, design, the original a modified copy should behave like)
+    jobs = [(p, p.name, None) for p in projects]
+    jobs += [(p, design_register.variant_design(p.name, tree), projects_dir / p.name) for tree, p in variants]
+    if args.project:
+        unknown = sorted(set(args.project) - {p.name for p, _, _ in jobs})
+        if unknown:
+            print(f"register-projects: no project {', '.join(unknown)} under {projects_dir.parent}",
+                  file=sys.stderr)
+            return 2
+        jobs = [job for job in jobs if job[0].name in args.project]
+    if not jobs:
+        print(f"No projects under {projects_dir}; put each one in its own directory there.", file=sys.stderr)
+        return 0
+
+    user = re.sub(r"[^A-Za-z0-9_.-]", "_", os.environ.get("USER") or getpass.getuser())
+    results: List[tuple] = []
+    for project, design, reference in jobs:
+        print(f"\n== {design} ({os.path.relpath(project, repo_root)}) ==", file=sys.stderr)
+        try:
+            if reference is not None and not reference.is_dir():
+                raise design_register.RegistrationError(
+                    f"it is a copy of {reference.name}, but {os.path.relpath(reference, repo_root)} does not exist.")
+            reg = design_register.register_project(project, e2e_dir=repo_root / "e2e", env=args.env,
+                                                   pdk=args.pdk, tools=args.tools, design=design,
+                                                   reference=reference)
+        except design_register.RegistrationError as e:
+            print(f"  FAILED: {e}", file=sys.stderr)
+            results.append((design, "FAILED", str(e).splitlines()[0]))
+            continue
+        except Exception as e:
+            traceback.print_exc()
+            results.append((design, "FAILED", f"{type(e).__name__}: {e}"))
+            continue
+        _print_registration(reg, repo_root)
+        if reference is not None and any(w.startswith("eco.yml") for w in reg.written):
+            print(f"  eco: the default eco.yml patches toward the '{reference.name}' design's syn netlist; "
+                  f"run its syn first", file=sys.stderr)
+        if args.no_dag:
+            results.append((design, "registered", "configs only (--no-dag)"))
+            continue
+        # make-dag's driver adds its file log to Hammer's class-wide log callbacks; drop it afterwards
+        # so the next project's output does not land in this design's log.
+        saved = list(HammerVLSILogging.callbacks)
+        try:
+            rc = _cmd_make_dag(argparse.Namespace(
+                design=reg.design, design_dir=str(reg.design_dir), repo_root=str(repo_root), obj_dir=None,
+                dags_folder=args.dags_folder, pdk=args.pdk, tools=args.tools, env=args.env, dag_id=None,
+                driver=None, skip_augment=True))
+        except Exception:
+            traceback.print_exc()
+            rc = 1
+        finally:
+            HammerVLSILogging.callbacks = saved
+        if rc:
+            results.append((design, "FAILED", "configs written, but make-dag failed (see above)"))
+        else:
+            results.append((design, "OK", f"DAG sledgehammer_{reg.design}_{user}"))
+
+    print("\nProjects:", file=sys.stderr)
+    for name, status, detail in results:
+        print(f"  {name:<24} {status:<10} {detail}", file=sys.stderr)
+    return 1 if any(status == "FAILED" for _, status, _ in results) else 0
 
 
 def _cmd_workspace_list(args: argparse.Namespace) -> int:
@@ -1507,7 +1623,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Generate an Airflow DAG for an existing design and symlink it "
              "into the dags/ folder. Wraps hammer-vlsi build with "
              "vlsi.core.build_system=airflow. Within a few minutes the DAG "
-             "appears as Hammer_<design> in the Airflow UI.",
+             "appears as sledgehammer_<design>_<user> in the Airflow UI.",
     )
     p_dag.add_argument("--design", required=True,
                        help="Design name (configs-design/<name>/).")
@@ -1527,7 +1643,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_dag.add_argument("--env", default="bwrc")
     p_dag.add_argument("--dag-id", default=None,
                        help="DAG ID to use in Airflow. Defaults to "
-                            "Hammer_<design>. Pick whatever name you want "
+                            "sledgehammer_<design>_<user>. Pick whatever name you want "
                             "shown in the Airflow UI.")
     p_dag.add_argument("--driver", default=None,
                        help="The design's driver script, which every DAG task runs. "
@@ -1538,6 +1654,28 @@ def _build_parser() -> argparse.ArgumentParser:
                             "and sky130-extras.yml up to date before "
                             "generating the DAG.")
     p_dag.set_defaults(func=_cmd_make_dag)
+
+    p_rp = sub.add_parser(
+        "register-projects",
+        help="Register every finished project under src/original/<project>/ (an EECS151 project with its "
+             "own Makefile and Hammer configs) as the design e2e/configs-design/<project>/, and every "
+             "modified copy src/<tree>/<project> as <project>_<tree> with an eco.yml pointing at the "
+             "original's syn netlist; then generate and link each DAG as make-dag does. Reads the "
+             "projects, never writes them. `make designs` in e2e/ runs this.",
+    )
+    p_rp.add_argument("--src", default=None,
+                      help="Directory holding one directory per project. Defaults to <repo>/src/original.")
+    p_rp.add_argument("--project", action="append", default=[],
+                      help="Register only this project (its directory name), original and copies. Repeatable.")
+    p_rp.add_argument("--repo-root", default=None,
+                      help="Checkout whose e2e/ gets the designs. Defaults to the one studio runs from.")
+    p_rp.add_argument("--dags-folder", default=None, help="As for make-dag.")
+    p_rp.add_argument("--pdk", default="sky130")
+    p_rp.add_argument("--tools", default="cm")
+    p_rp.add_argument("--env", default="bwrc")
+    p_rp.add_argument("--no-dag", action="store_true",
+                      help="Write the design configs but no DAG.")
+    p_rp.set_defaults(func=_cmd_register_projects)
 
     p_reap = sub.add_parser(
         "reap",
