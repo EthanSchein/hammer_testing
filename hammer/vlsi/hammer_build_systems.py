@@ -944,6 +944,64 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
 
     # 2. Dynamic Python Task Generator Logic
     output += textwrap.dedent("""
+        # 'reuse_upstream': a syn or par that would run only because a later stage needs it (an
+        # ECO on an existing layout) is not run. Its last committed outputs are checked and handed
+        # on as they are. Hammer's dependency check, fingerprints included, is not consulted and its
+        # master database is left alone, so a normal run still judges the stage as before. A stage
+        # ticked on the form runs as usual.
+        def _reusing(stage, context):
+            conf = context['dag_run'].conf or {}
+            return bool(conf.get('reuse_upstream')) and not conf.get(stage)
+
+        def _reuse_existing(stage, out_path, context):
+            if not _reusing(stage, context):
+                return False
+            import json
+            obj_dir = OBJ_DIR
+            try:
+                from hammer.shell.hammer_vlsi import _resolve_workspace_obj_dir
+                obj_dir = _resolve_workspace_obj_dir(context, DESIGN_NAME, default_obj_dir=OBJ_DIR,
+                                                     gen_user=GEN_USER, claim=False) or OBJ_DIR
+            except Exception as e:
+                raise AirflowFailException(f"reuse_upstream: cannot resolve the build directory to reuse {stage} from: {e}") from e
+            out_path = str(out_path or "").replace(OBJ_DIR, obj_dir)
+            fix = f"Run {stage} (tick it, or untick reuse_upstream) to rebuild it."
+            try:
+                with open(out_path) as f:
+                    out = json.load(f)
+            except (OSError, ValueError) as e:
+                raise AirflowFailException(f"reuse_upstream: no {stage} outputs to reuse ({out_path!r}: {e}). {fix}")
+            done = os.path.getmtime(out_path)
+            produced_keys, inputs_key = {
+                'syn': (['synthesis.outputs.output_files'], 'synthesis.inputs.input_files'),
+                'par': (['par.outputs.output_netlist', 'par.outputs.output_sim_netlist'], 'par.inputs.input_files'),
+            }[stage]
+            problems = []
+            for key in produced_keys:
+                paths = out.get(key)
+                for p in (paths if isinstance(paths, list) else [paths]):
+                    if not p or not os.path.exists(str(p)):
+                        problems.append(f"{key} {p!r} does not exist")
+            # an input that is gone, or newer than the outputs (edited RTL, a later syn), means they are stale
+            for p in out.get(inputs_key) or []:
+                if not os.path.exists(str(p)):
+                    problems.append(f"input {p} recorded in {out_path} no longer exists")
+                elif os.path.getmtime(str(p)) > done:
+                    problems.append(f"input {p} is newer than {out_path}")
+            # hammer sets <stage>.needsToRerun while a run is in flight and clears it when one completes
+            master = os.path.join(obj_dir, "master_database.json")
+            try:
+                with open(master) as f:
+                    if json.load(f).get(f"{stage}.needsToRerun", True):
+                        problems.append(f"{master} marks {stage} as needing a rerun (its last run did not complete)")
+            except (OSError, ValueError) as e:
+                problems.append(f"no completed {stage} run recorded ({master}: {e})")
+            if problems:
+                raise AirflowFailException(f"reuse_upstream: cannot reuse {stage}: " + "; ".join(problems) + ". " + fix)
+            print(f"[reuse_upstream] {stage} not run: reusing {out_path} as it is. Hammer's dependency "
+                  f"check (fingerprints included) was not consulted, and the master database is unchanged.")
+            return True
+
         @task
         def sim_rtl(suffix, p_sim_rtl_in, sim_rtl_run_dir, **context):
             if should_run_stage('sim_rtl', context) or should_run_stage('power_rtl', context):
@@ -972,8 +1030,10 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
                 raise AirflowSkipException("power_rtl task skipped")
 
         @task
-        def syn(suffix, p_syn_in, **context):
+        def syn(suffix, p_syn_in, syn_out=None, **context):
             if should_run_stage('syn', context):
+                if _reuse_existing('syn', syn_out, context):
+                    return
                 if p_syn_in == PROJ_CONFIGS:
                     p_syn_in = _selected_proj_configs(context)
                 flags = []
@@ -1014,13 +1074,19 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
         @task
         def syn_to_par(syn_out, par_in, **context):
             if should_run_stage('par', context) or should_run_stage('drc', context) or should_run_stage('lvs', context) or should_run_stage('sim_par', context) or should_run_stage('timing_par', context) or should_run_stage('formal_par', context) or should_run_stage('power_par', context):
+                if _reusing('par', context):
+                    # par is reused, so its input stays as that par run left it
+                    print("[reuse_upstream] syn-to-par not run: par is reused")
+                    return
                 run_hammer_action("syn-to-par", ["-p", syn_out, "-o", par_in])
             else:
                 raise AirflowSkipException("syn-to-par skipped")
 
         @task
-        def par(suffix, par_in, **context):
+        def par(suffix, par_in, par_out=None, **context):
             if should_run_stage('par', context):
+                if _reuse_existing('par', par_out, context):
+                    return
                 run_hammer_action(f"par{suffix}", ["-p", par_in])
             else:
                 raise AirflowSkipException("par task skipped")
@@ -1224,6 +1290,8 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
         'power_par': Param(default=False, type='boolean', title='Power Place and Route'),
         'eco': Param(default=False, type='boolean', title='Functional ECO'),
         'eco_par': Param(default=False, type='boolean', title='ECO Place and Route'),
+        'reuse_upstream': Param(default=False, type='boolean', title='Reuse existing syn/par outputs',
+                                description='Syn and par that run only because a later stage (e.g. an ECO) needs them are not run: their last completed outputs are checked and reused as they are, without Hammer\\'s dependency check. Ticked stages still run.'),
         'pcb': Param(default=False, type='boolean', title='PCB Deliverables'),
         'modules': Param(default=['all'], type='array', examples={module_examples!r}, title='Modules',
                          description='Run the selected stages on these modules only (default: all).'),
@@ -1333,7 +1401,7 @@ def hammer_dag():
             p_rtl = power_rtl(suffix, paths_dict['power_sim_rtl_in'], paths_dict['power_rtl_run_dir'])
 
             # 2. Synthesis Track
-            s_node = syn(suffix, paths_dict['p_syn_in'])
+            s_node = syn(suffix, paths_dict['p_syn_in'], paths_dict['syn_out'])
             s_to_sim = syn_to_sim(paths_dict['syn_out'], paths_dict['sim_syn_in'])
             s_syn = sim_syn(suffix, paths_dict['sim_syn_in'], paths_dict['sim_syn_run_dir'])
             s_to_p = syn_to_power(paths_dict['syn_out'], paths_dict['power_syn_in'])
@@ -1348,7 +1416,7 @@ def hammer_dag():
 
             # 3. Place & Route Track
             s_to_par = syn_to_par(paths_dict['syn_out'], paths_dict['par_in'])
-            p_node = par(suffix, paths_dict['par_in'])
+            p_node = par(suffix, paths_dict['par_in'], paths_dict['par_out'])
 
             # Post-P&R Verification Signoffs
             p_to_sim = par_to_sim(paths_dict['par_out'], paths_dict['sim_par_in'])

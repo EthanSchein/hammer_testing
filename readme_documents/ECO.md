@@ -187,7 +187,28 @@ Innovus stops at the first one (`IMPTCM-162`). Use `hierarchical` or
 | Flow | Command |
 |---|---|
 | Make (`e2e/`) | `make eco-par` (after `eco`); `make redo-eco-par` reruns just it |
-| DAG | tick **ECO Place and Route**, or `sledgehammer run eco_par`; asking for it pulls in `eco`, and `syn` and `par` skip |
+| DAG | tick **ECO Place and Route**, or `sledgehammer run eco_par`; asking for it pulls in `eco`, `syn` and `par`. Tick **Reuse existing syn/par outputs** as well to apply the ECO to the layout you already have (below) |
+
+Without that option the DAG runs `syn` and `par` as Hammer actions, and Hammer
+reruns them whenever its dependency check sees a change, including a change to
+Hammer's own code (`vlsi.framework_fingerprint_sha256`), not only when their
+outputs are missing. With **Reuse existing syn/par outputs**
+(`reuse_upstream`), a `syn` or `par` that runs only because a later stage needs
+it calls no Hammer action. It checks its last completed outputs and passes them
+on, and `syn_to_par` leaves `par-input.json` alone. Before reusing, the task
+checks that:
+
+- its `syn-output-full.json` / `par-output-full.json` reads, and the netlists it
+  lists exist;
+- every input it records (the RTL, `par`'s synthesized netlist) still exists and
+  is not newer than it;
+- `master_database.json` does not mark the stage `needsToRerun` (a run that did
+  not complete).
+
+Any failure stops the task with the reason and does not fall back to running
+the stage. Reusing skips Hammer's dependency check, fingerprints included, and
+writes nothing to the master database, so the next normal run judges `syn` and
+`par` as it would have. A stage ticked on the form runs as usual.
 
 A `hammer.d` or DAG generated before this stage has no `eco_par`; regenerate
 it (`studio make-dag --design <design>`, or `sledgehammer buildfile`).
