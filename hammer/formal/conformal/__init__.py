@@ -41,7 +41,7 @@ class Conformal(HammerFormalTool, CadenceTool):
         if not license in ["L", "XL", "GXL"]:
             self.logger.error("License must be L, XL, or GXL. For CCD, -MCC is equivalent to GXL here.")
 
-        if self.check == "lec":
+        if self.check in ("lec", "eco_verify"):
             cmd = [lec_bin, f"-{license}"]
         elif self.check == "power":
             if license == "L":
@@ -156,6 +156,8 @@ class Conformal(HammerFormalTool, CadenceTool):
                 self.setup_eco_designs,
                 self.patch_eco_designs
             ])
+        if self.check == "eco_verify":
+            return self.make_steps_from_methods([self.verify_eco_netlist])
         if self.check != "lec":
             self.logger.error("Check type {self.check} not yet supported!")
         steps = [
@@ -414,6 +416,85 @@ class Conformal(HammerFormalTool, CadenceTool):
         append("}")
         append("close $eco_patch")
 
+    # Final check of an ECO (formal.inputs.check: eco_verify, run by eco-par once
+    # place and route has implemented the patch): the netlist par wrote
+    # (input_files) against the corrected reference (reference_files), read and
+    # compared flat with the eco stage's libraries, as its own final compare is.
+
+    ECO_VERIFY_REPORT = "eco_verify_verification.rpt"
+    ECO_VERIFY_SUMMARY = "eco_verify_compare_summary.rpt"
+
+    def verify_eco_netlist(self) -> bool:
+        """ Compare the post-ECO netlist with the reference """
+        append = self.append
+        # a report left by an earlier run must not pass for this one
+        for report in (self.ECO_VERIFY_REPORT, self.ECO_VERIFY_SUMMARY):
+            if os.path.exists(os.path.join(self.run_dir, report)):
+                os.remove(os.path.join(self.run_dir, report))
+
+        append("set_dofile_abort exit")
+        max_threads = min(self.get_setting("vlsi.core.max_threads"), 16)
+        append(f"set_parallel_option -threads 1,{max_threads}")
+        append("set_log_file eco_verify.log -replace")
+        append("usage -auto -elapse")
+
+        liberty_files = self.eco_liberty_files()
+        if len(liberty_files) == 0:
+            self.logger.error("No Liberty files to read the post-ECO netlist with")
+            return False
+        append(f"read_library {' '.join(liberty_files)} -liberty -both -replace")
+
+        valid_exts = [".v", ".v.gz"]
+        if not self.check_input_files(valid_exts) or not self.check_reference_files(valid_exts):
+            return False
+        implemented_files = list(map(lambda name: os.path.join(os.getcwd(), name), self.input_files))
+        append(f"read_design {' '.join(self.eco_reference_paths)} -golden -replace")
+        append(f"read_design {' '.join(implemented_files)} -revised -replace")
+        append(f"set_root_module {self.top_module} -both")
+        append("set_system_mode lec")
+        append("add_compared_points -all")
+        append("compare")
+        append(f"redirect {self.ECO_VERIFY_REPORT} {{report_verification}}")
+        append(f"redirect {self.ECO_VERIFY_SUMMARY} {{report_compare_data -summary}}")
+        self.ran_verify_eco_netlist = True
+        return True
+
+    def eco_verify_problems(self) -> List[str]:
+        """
+        Why the post-ECO compare is not a pass: anything but a PASS verdict, any incomplete
+        verification, no compared points, or a compared point that is not (inverted-)equivalent.
+        """
+        problems = []
+        result = self.eco_compare_result(self.ECO_VERIFY_REPORT)
+        if result != "PASS":
+            problems.append(f"the compare reported {result or 'no result'}")
+        try:
+            with open(os.path.join(self.run_dir, self.ECO_VERIFY_REPORT)) as f:
+                incomplete = re.search(r"Incomplete verification:\s*(\d+)", f.read())
+            if incomplete is None or int(incomplete.group(1)) != 0:
+                problems.append("the verification is incomplete")
+            with open(os.path.join(self.run_dir, self.ECO_VERIFY_SUMMARY)) as f:
+                rows = {m.group(1): int(m.group(2)) for m in
+                        re.finditer(r"^([A-Za-z][\w-]*(?: [A-Za-z][\w-]*)*)\s+[\d\s]*?(\d+)\s*$", f.read(), re.M)}
+        except OSError as e:
+            problems.append(f"no report ({e})")
+            return problems
+        if rows.get("Equivalent", 0) == 0:
+            problems.append("no points were compared equivalent")
+        for name, count in rows.items():
+            if name not in ("Equivalent", "Inverted-equivalent") and count:
+                problems.append(f"{count} {name} point(s)")
+        return problems
+
+    @property
+    def ran_verify_eco_netlist(self) -> bool:
+        """ The verify_eco_netlist step sets this to True if it was run """
+        return self.attr_getter("_ran_verify_eco_netlist", False)
+
+    @ran_verify_eco_netlist.setter
+    def ran_verify_eco_netlist(self, val: bool) -> None:
+        self.attr_setter("_ran_verify_eco_netlist", val)
+
     @property
     def eco_reference_paths(self) -> List[str]:
         return list(map(lambda name: os.path.join(os.getcwd(), name), self.reference_files))
@@ -445,6 +526,14 @@ class Conformal(HammerFormalTool, CadenceTool):
         return None
 
     def fill_outputs(self) -> bool:
+        if self.check == "eco_verify" and self.ran_verify_eco_netlist:
+            problems = self.eco_verify_problems()
+            if problems:
+                self.logger.error("The post-ECO netlist is not proven equivalent to the reference: " + "; ".join(problems)
+                                  + f". See {os.path.join(self.run_dir, self.ECO_VERIFY_REPORT)}.")
+                return False
+            self.logger.info("The post-ECO netlist is equivalent to the reference (Conformal PASS).")
+            return super().fill_outputs()
         if self.check != "eco":
             return super().fill_outputs()
         if not self.ran_patch_eco_designs:

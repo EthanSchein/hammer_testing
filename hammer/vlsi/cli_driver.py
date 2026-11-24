@@ -1240,6 +1240,8 @@ class CLIDriver:
                 if not success:
                     driver.log.error("ECO place-and-route did not succeed")
                     return None
+                if not self.verify_eco_par_netlist(driver, output):
+                    return None
                 post_run_func_checked(driver)
                 dump_config_to_json_file(os.path.join(driver.par_tool.run_dir, "par-output.json"), output)
                 dump_config_to_json_file(os.path.join(driver.par_tool.run_dir, "par-output-full.json"),
@@ -1422,6 +1424,35 @@ class CLIDriver:
             return None
         else:
             return self.get_full_config(driver, eco_input_only)
+
+    @staticmethod
+    def verify_eco_par_netlist(driver: HammerDriver, par_output: dict) -> bool:
+        """
+        The end of eco_par: Conformal proves the netlist par just wrote equivalent to the
+        corrected reference the eco stage patched toward (formal.inputs.eco_reference_files),
+        in eco-verify/ under the eco_par rundir. False, with the reason logged, otherwise.
+        """
+        assert driver.par_tool is not None, "eco_par verifies after place and route"
+        netlist = par_output.get("par.outputs.output_sim_netlist")
+        reference = driver.database.get_setting("formal.inputs.eco_reference_files", nullvalue=[])
+        if not netlist or not os.path.isfile(netlist):
+            driver.log.error(f"ECO place-and-route left no netlist to verify ({netlist})")
+            return False
+        if not reference:
+            driver.log.error("No formal.inputs.eco_reference_files to verify the post-ECO netlist against")
+            return False
+        driver.database.set_setting("formal.inputs.check", "eco_verify")
+        driver.database.set_setting("formal.inputs.input_files", [netlist])
+        driver.database.set_setting("formal.inputs.reference_files", list(reference))
+        driver.database.set_setting("formal.inputs.top_module", driver.par_tool.top_module)
+        if not driver.load_formal_tool(os.path.join(driver.par_tool.run_dir, "eco-verify")):
+            return False
+        assert driver.formal_tool is not None, "load_formal_tool was unsuccessful"
+        success, _ = driver.run_formal(driver.formal_tool.get_tool_hooks() +
+                                       driver.tech.get_tech_formal_hooks(driver.formal_tool.name))
+        if not success:
+            driver.log.error("ECO place-and-route: the post-ECO netlist did not pass equivalence checking")
+        return success
 
     def eco_to_par_action(self, driver: HammerDriver, append_error_func: Callable[[str], None]) -> Optional[dict]:
         """Create a full config to run the output."""
