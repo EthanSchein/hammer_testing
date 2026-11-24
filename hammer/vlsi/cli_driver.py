@@ -1448,8 +1448,11 @@ class CLIDriver:
         if not driver.load_formal_tool(os.path.join(driver.par_tool.run_dir, "eco-verify")):
             return False
         assert driver.formal_tool is not None, "load_formal_tool was unsuccessful"
+        # force_override: eco-par's --from_step / --to_step name Innovus steps; Conformal must not inherit them
+        # (it has no such step and would stop before comparing), so a resumed eco_par still verifies
         success, _ = driver.run_formal(driver.formal_tool.get_tool_hooks() +
-                                       driver.tech.get_tech_formal_hooks(driver.formal_tool.name))
+                                       driver.tech.get_tech_formal_hooks(driver.formal_tool.name),
+                                       force_override=True)
         if not success:
             driver.log.error("ECO place-and-route: the post-ECO netlist did not pass equivalence checking")
         return success
