@@ -18,7 +18,7 @@ ECO_OUT = {
     "formal.outputs.eco_netlist": "/obj/eco-rundir/dummy.eco.v",
     "formal.outputs.eco_stylus_script": "/obj/eco-rundir/eco_stylus.tcl",
 }
-ECO_STEPS = ["eco_restore_design", "eco_apply_patch", "eco_place", "eco_route", "eco_opt_design",
+ECO_STEPS = ["eco_restore_design", "eco_apply_patch", "eco_place", "eco_route", "eco_opt_design", "eco_check",
              "write_regs", "write_design"]
 
 

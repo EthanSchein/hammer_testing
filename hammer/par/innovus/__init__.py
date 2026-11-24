@@ -761,6 +761,20 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             if not os.path.isfile(netlist) or os.path.getmtime(netlist) < os.path.getmtime(script):
                 self.logger.error(f"ECO place and route stopped before writing its outputs; see {self.run_dir}/innovus.log")
                 return False
+            # this run's check of the patch's nets must have found nothing open or unrouted
+            report = os.path.join(self.run_dir, "eco_connectivity.rpt")
+            try:
+                with open(report, errors="replace") as f:
+                    text = f.read()
+                fresh = os.path.getmtime(report) >= os.path.getmtime(script)
+            except OSError:
+                text, fresh = "", False
+            if not fresh or "Found no problems or warnings" not in text:
+                found = [line.strip() for line in text.splitlines() if line.startswith("Net ")][:10]
+                self.logger.error("The ECO cells' nets are not all connected and routed: "
+                                  + ("; ".join(found) or "no report from this run") + f". See {report}.")
+                return False
+            self.logger.info(self.eco_drc_summary())
 
         if self.ran_write_ilm:
             # Check that the ILMs got written.
@@ -977,6 +991,7 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                 self.eco_place,
                 self.eco_route,
                 self.eco_opt_design,
+                self.eco_check,
                 self.write_regs,
                 self.write_design
             ])
@@ -1829,6 +1844,8 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             return False
         # on an error innovus drops to an interactive prompt instead of exiting
         self.append(f"if {{[catch {{read_db {db}}} err]}} {{puts $err; puts {{ERROR: failed to read {db}}}; exit 2}}")
+        # the DRC par left, for eco_check's report to set the ECO's against
+        self.verbose_append("check_drc -out_file eco_drc_before.rpt -limit 100000")
         return True
 
     def eco_apply_patch(self) -> bool:
@@ -1839,6 +1856,10 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             return False
         self.append(f"if {{[catch {{source {script}}} err]}} {{puts $err; puts {{ERROR: failed to apply {script}}}; exit 2}}")
         self.append('puts "ECO cells to place: [llength [get_db insts -if {.place_status == unplaced}]]"')
+        # the cells the patch added, for eco_check
+        self.append('set _eco_f [open eco_new_insts.txt w]; '
+                    'foreach _i [get_db insts -if {.place_status == unplaced}] {puts $_eco_f [get_db $_i .name]}; '
+                    'close $_eco_f')
         return True
 
     def eco_place(self) -> bool:
@@ -1863,6 +1884,44 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
         """ Post-route optimization for the timing the patch disturbed """
         self.verbose_append("opt_design -post_route -setup -hold -expanded_views -timing_debug_report")
         return True
+
+    def eco_check(self) -> bool:
+        """
+        Check every net on the patch's cells is connected and routed (fill_outputs fails the run
+        otherwise), and report DRC to set against eco_drc_before.rpt (reported, not enforced).
+        """
+        self.append('set _eco_f [open eco_new_insts.txt]; set _eco_names [read $_eco_f]; close $_eco_f')
+        self.append('set _eco_nets {}; foreach _n $_eco_names {foreach _i [get_db insts $_n] '
+                    '{lappend _eco_nets {*}[get_db $_i .pins.net.name]}}')
+        self.append('set _eco_nets [lsort -unique [lsearch -all -inline -not -exact $_eco_nets {}]]')
+        self.append('set _eco_f [open eco_nets.txt w]; puts $_eco_f [join $_eco_nets "\\n"]; close $_eco_f')
+        self.append('if {[llength $_eco_nets]} {check_connectivity -nets $_eco_nets -type regular -out_file eco_connectivity.rpt} '
+                    'else {set _eco_f [open eco_connectivity.rpt w]; '
+                    'puts $_eco_f {Found no problems or warnings (the patch added no cells).}; close $_eco_f}')
+        self.verbose_append("check_drc -out_file eco_drc_after.rpt -limit 100000")
+        return True
+
+    def eco_drc_summary(self) -> str:
+        """ DRC after the ECO against the restored database's: how many are new, and how many of those on ECO nets """
+        def violations(name: str) -> Optional[set]:
+            try:
+                with open(os.path.join(self.run_dir, name), errors="replace") as f:
+                    return set(re.findall(r"^([A-Z_]+: .*?)\nBounds : (\(.*?\) \(.*?\))", f.read(), re.M))
+            except OSError:
+                return None
+        before, after = violations("eco_drc_before.rpt"), violations("eco_drc_after.rpt")
+        if before is None or after is None:
+            return "DRC reports missing"
+        try:
+            with open(os.path.join(self.run_dir, "eco_nets.txt")) as f:
+                eco_nets = set(f.read().split())
+        except OSError:
+            eco_nets = set()
+        new = after - before
+        on_eco = [v for v in new if any(f"Net {n} " in v[0] or v[0].endswith(f"Net {n}") for n in eco_nets)]
+        return (f"DRC: {len(before)} violations in the restored par database, {len(after)} after the ECO; "
+                f"{len(new)} not in the restored database, {len(on_eco)} of them on nets of the ECO cells "
+                f"(eco_drc_before.rpt, eco_drc_after.rpt)")
 
     def write_netlist(self) -> bool:
         pcells = self.get_physical_only_cells()

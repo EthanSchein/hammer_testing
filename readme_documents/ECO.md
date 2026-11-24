@@ -220,17 +220,39 @@ set, the Innovus plugin replaces its full flow with these steps, in
 
 | Step | Innovus |
 |---|---|
-| `eco_restore_design` | `read_db` of `par`'s `<top>_FINAL`, found beside `par.outputs.output_netlist` |
-| `eco_apply_patch` | `source eco_stylus.tcl`; the new cells come in unplaced, already on VDD/VSS through the database's global-net rules |
+| `eco_restore_design` | `read_db` of `par`'s `<top>_FINAL`, found beside `par.outputs.output_netlist`; `check_drc` into `eco_drc_before.rpt` |
+| `eco_apply_patch` | `source eco_stylus.tcl`; the new cells come in unplaced, already on VDD/VSS through the database's global-net rules. Their names go to `eco_new_insts.txt` |
 | `eco_place` | `delete_filler` (the technology's decap and filler cells), `place_eco`, `check_place`, then the same `add_fillers` as `par` |
 | `eco_route` | `route_eco`: routes the new and changed nets, keeps the rest |
 | `eco_opt_design` | `opt_design -post_route -setup -hold`, as `par` ends on Innovus 25.1 |
+| `eco_check` | `check_connectivity` on every net of the new cells into `eco_connectivity.rpt`; `check_drc` into `eco_drc_after.rpt` |
 | `write_regs`, `write_design` | `par`'s own: `<top>_FINAL`, the netlists, DEF, GDS, SDF and SPEF |
 
-`eco-par-rundir/par-output.json` exports the usual `par.outputs.*`, pointing at
-the patched layout. A failed restore or patch exits Innovus (instead of leaving
-it at its prompt), and the run fails when its netlist is older than the script,
-so a rerun that stopped early never passes on an earlier run's outputs.
+Then the `eco-par` action has Conformal prove the netlist par just wrote
+(`<top>.sim.v`) equivalent to the corrected reference, the same
+`formal.inputs.eco_reference_files` the `eco` stage patched toward. It is the
+formal tool with `formal.inputs.check: eco_verify`, in
+`eco-par-rundir/eco-verify/`, reading the `eco` stage's setup-corner Liberty
+and comparing flat, as the `eco` stage's own final compare does.
+
+`eco_par` succeeds only when all of these hold:
+
+- Innovus restored the database and applied the patch (a failure exits Innovus
+  instead of leaving it at its prompt), and `place_eco` left nothing unplaced;
+- its netlist is newer than the script it ran, so a rerun that stopped early
+  never passes on an earlier run's outputs;
+- this run's `eco_connectivity.rpt` says "Found no problems or warnings": no
+  net of a new cell is open or unrouted;
+- `eco_verify_verification.rpt` reports `Compare Results: PASS` with no
+  incomplete verification, and `eco_verify_compare_summary.rpt` has
+  equivalent points and nothing non-equivalent, aborted or not compared. The
+  reports of an earlier run are deleted before Conformal starts.
+
+DRC is reported, not enforced: the log gives the violations in the restored
+database, after the ECO, how many are new, and how many of the new ones are on
+the new cells' nets. `eco-par-rundir/par-output.json` exports the usual
+`par.outputs.*`, pointing at the patched layout, and is written only when the
+run succeeds.
 
 `eco_par` keeps `par` cached. The `eco-par` action runs the par tool in its own
 rundir without the dependency check, PD cache or substep resume, so it never
@@ -299,10 +321,9 @@ patched netlist against the changed RTL passes.
 
 ## What is not covered yet
 
-- **Signoff on the patched layout.** Timing, DRC, LVS and a final
-  equivalence check of `eco-par-rundir/<top>.sim.v` would hang off `eco_par`
-  the way they hang off `par` today. The equivalence results above were run by
-  hand.
+- **Signoff on the patched layout.** Timing, DRC and LVS signoff would hang
+  off `eco_par` the way they hang off `par` today. `eco_par` itself checks
+  equivalence and the new cells' routing, and only reports DRC.
 - **Physical-aware patch mapping.** `optimize_patch` maps with the Liberty
   only; with the SDC, LEF and `par`'s DEF it can map for timing and placement
   (`-premaskphysical`), as the archived flow did. Here `eco_opt_design`
