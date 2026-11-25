@@ -54,6 +54,7 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
         - timing-par
         - eco (the formal action with formal.inputs.check: eco, in eco-rundir)
         - eco-par (incremental par of the eco patch on par's database, in eco-par-rundir)
+        - timing-eco (setup / hold repair of par's routed database, in timing-eco-rundir; independent of the eco stages)
 
     For hierarchical flows, the syn, par, drc, lvs, sim, power, formal, and timing actions will all be suffixed with the name
     of the hierarchical modules (e.g. syn-Top, syn-SubModA, par-SubModA, etc.). The appropriate
@@ -144,7 +145,7 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
         ####################################################################################
         ## Steps for {mod}
         ####################################################################################
-        .PHONY: sim-rtl{suffix} syn{suffix} syn-to-sim{suffix} sim-syn{suffix} syn-to-par{suffix} par{suffix} par-to-sim{suffix} sim-par{suffix} sim-par-to-power{suffix} par-to-power{suffix} power-par{suffix} power-rtl{suffix} sim-rtl-to-power{suffix} sim-syn-to-power{suffix} syn-to-power{suffix} power-syn{suffix} par-to-drc{suffix} drc{suffix} par-to-lvs{suffix} lvs{suffix} syn-to-formal{suffix} formal-syn{suffix} par-to-formal{suffix} formal-par{suffix} syn-to-timing{suffix} timing-syn{suffix} par-to-timing{suffix} timing-par{suffix} par-to-eco{suffix} eco{suffix} eco-to-par{suffix} eco-par{suffix}
+        .PHONY: sim-rtl{suffix} syn{suffix} syn-to-sim{suffix} sim-syn{suffix} syn-to-par{suffix} par{suffix} par-to-sim{suffix} sim-par{suffix} sim-par-to-power{suffix} par-to-power{suffix} power-par{suffix} power-rtl{suffix} sim-rtl-to-power{suffix} sim-syn-to-power{suffix} syn-to-power{suffix} power-syn{suffix} par-to-drc{suffix} drc{suffix} par-to-lvs{suffix} lvs{suffix} syn-to-formal{suffix} formal-syn{suffix} par-to-formal{suffix} formal-par{suffix} syn-to-timing{suffix} timing-syn{suffix} par-to-timing{suffix} timing-par{suffix} par-to-eco{suffix} eco{suffix} eco-to-par{suffix} eco-par{suffix} timing-eco{suffix}
 
         sim-rtl{suffix}          : {sim_rtl_out}
         syn{suffix}              : {syn_out}
@@ -191,6 +192,8 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
         eco{suffix}              : {eco_out}
         eco-to-par{suffix}       : {eco_par_in}
         eco-par{suffix}          : {eco_par_out}
+
+        timing-eco{suffix}       : {timing_eco_run_dir}/par-output-full.json
 
         {par_to_syn}
 
@@ -290,11 +293,14 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
         {eco_par_out}: {eco_par_in} $(HAMMER_ECO_PAR_DEPENDENCIES)
         \t$(HAMMER_EXEC) {env_confs} -p {eco_par_in} $(HAMMER_EXTRA_ARGS) --par_rundir {eco_par_run_dir} --obj_dir {obj_dir} eco-par
 
+        {timing_eco_run_dir}/par-output-full.json: {par_out} $(HAMMER_TIMING_ECO_DEPENDENCIES)
+        \t$(HAMMER_EXEC) {env_confs} -p {par_out} $(HAMMER_EXTRA_ARGS) --par_rundir {timing_eco_run_dir} --obj_dir {obj_dir} timing-eco
+
         # Redo steps
         # These intentionally break the dependency graph, but allow the flexibility to rerun a step after changing a config.
         # Hammer doesn't know what settings impact synthesis only, e.g., so these are for power-users who "know better."
         # The HAMMER_EXTRA_ARGS variable allows patching in of new configurations with -p or using --to_step or --from_step, for example.
-        .PHONY: redo-sim-rtl{suffix} redo-sim-rtl-to-power{suffix} redo-syn{suffix} redo-syn-to-sim{suffix} redo-syn-to-power{suffix} redo-sim-syn{suffix} redo-sim-syn-to-power{suffix} redo-syn-to-par{suffix} redo-par{suffix} redo-par-to-sim{suffix} redo-sim-par{suffix} redo-sim-par-to-power{suffix} redo-par-to-power{suffix} redo-power-par{suffix} redo-par-to-drc{suffix} redo-drc{suffix} redo-par-to-lvs{suffix} redo-lvs{suffix} redo-syn-to-formal{suffix} redo-formal-syn{suffix} redo-par-to-formal{suffix} redo-formal-par{suffix} redo-syn-to-timing{suffix} redo-timing-syn{suffix} redo-par-to-timing{suffix} redo-timing-par{suffix} redo-par-to-eco{suffix} redo-eco{suffix} redo-eco-to-par{suffix} redo-eco-par{suffix}
+        .PHONY: redo-sim-rtl{suffix} redo-sim-rtl-to-power{suffix} redo-syn{suffix} redo-syn-to-sim{suffix} redo-syn-to-power{suffix} redo-sim-syn{suffix} redo-sim-syn-to-power{suffix} redo-syn-to-par{suffix} redo-par{suffix} redo-par-to-sim{suffix} redo-sim-par{suffix} redo-sim-par-to-power{suffix} redo-par-to-power{suffix} redo-power-par{suffix} redo-par-to-drc{suffix} redo-drc{suffix} redo-par-to-lvs{suffix} redo-lvs{suffix} redo-syn-to-formal{suffix} redo-formal-syn{suffix} redo-par-to-formal{suffix} redo-formal-par{suffix} redo-syn-to-timing{suffix} redo-timing-syn{suffix} redo-par-to-timing{suffix} redo-timing-par{suffix} redo-par-to-eco{suffix} redo-eco{suffix} redo-eco-to-par{suffix} redo-eco-par{suffix} redo-timing-eco{suffix}
 
         redo-sim-rtl{suffix}:
         \t$(HAMMER_EXEC) {env_confs} {p_sim_rtl_in} $(HAMMER_EXTRA_ARGS) --sim_rundir {sim_rtl_run_dir} --obj_dir {obj_dir} sim{suffix}
@@ -392,6 +398,9 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
         redo-eco-par{suffix}:
         \t$(HAMMER_EXEC) {env_confs} -p {eco_par_in} $(HAMMER_EXTRA_ARGS) --par_rundir {eco_par_run_dir} --obj_dir {obj_dir} eco-par
 
+        redo-timing-eco{suffix}:
+        \t$(HAMMER_EXEC) {env_confs} -p {par_out} $(HAMMER_EXTRA_ARGS) --par_rundir {timing_eco_run_dir} --obj_dir {obj_dir} timing-eco
+
         """)
 
     if not dependency_graph:
@@ -415,6 +424,7 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
         timing_par_run_dir = os.path.join(obj_dir, "timing-par-rundir")
         eco_run_dir = os.path.join(obj_dir, "eco-rundir")
         eco_par_run_dir = os.path.join(obj_dir, "eco-par-rundir")
+        timing_eco_run_dir = os.path.join(obj_dir, "timing-eco-rundir")
 
         p_sim_rtl_in = proj_confs
         sim_rtl_out = os.path.join(sim_rtl_run_dir, "sim-output-full.json")
@@ -469,7 +479,7 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
             timing_syn_in=timing_syn_in, timing_syn_out=timing_syn_out, timing_syn_run_dir=timing_syn_run_dir,
             timing_par_in=timing_par_in, timing_par_out=timing_par_out, timing_par_run_dir=timing_par_run_dir,
             eco_in=eco_in, eco_out=eco_out, eco_run_dir=eco_run_dir,
-            eco_par_in=eco_par_in, eco_par_out=eco_par_out, eco_par_run_dir=eco_par_run_dir)
+            eco_par_in=eco_par_in, eco_par_out=eco_par_out, eco_par_run_dir=eco_par_run_dir, timing_eco_run_dir=timing_eco_run_dir)
     else:
         # Hierarchical flow
         for node, edges in dependency_graph.items():
@@ -492,6 +502,7 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
             timing_par_run_dir = os.path.join(obj_dir, "timing-par-" + node)
             eco_run_dir = os.path.join(obj_dir, "eco-" + node)
             eco_par_run_dir = os.path.join(obj_dir, "eco-par-" + node)
+            timing_eco_run_dir = os.path.join(obj_dir, "timing-eco-" + node)
 
             p_sim_rtl_in = proj_confs
             sim_rtl_out = os.path.join(sim_rtl_run_dir, "sim-output-full.json")
@@ -566,7 +577,7 @@ def build_makefile(driver: HammerDriver, append_error_func: Callable[[str], None
                 timing_syn_in=timing_syn_in, timing_syn_out=timing_syn_out, timing_syn_run_dir=timing_syn_run_dir,
                 timing_par_in=timing_par_in, timing_par_out=timing_par_out, timing_par_run_dir=timing_par_run_dir,
                 eco_in=eco_in, eco_out=eco_out, eco_run_dir=eco_run_dir,
-                eco_par_in=eco_par_in, eco_par_out=eco_par_out, eco_par_run_dir=eco_par_run_dir)
+                eco_par_in=eco_par_in, eco_par_out=eco_par_out, eco_par_run_dir=eco_par_run_dir, timing_eco_run_dir=timing_eco_run_dir)
 
     with open(makefile, "w") as f:
         f.write(output)
@@ -1206,6 +1217,13 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
                 raise AirflowSkipException("eco_par task skipped")
 
         @task
+        def timing_eco(par_out, timing_eco_run_dir, **context):
+            if should_run_stage('timing_eco', context):
+                run_hammer_action("timing-eco", ["-p", par_out, "--par_rundir", timing_eco_run_dir])
+            else:
+                raise AirflowSkipException("timing_eco task skipped")
+
+        @task
         def syn_to_formal(syn_out, formal_syn_in, **context):
             if should_run_stage('formal_syn', context):
                 run_hammer_action("syn-to-formal", ["-p", syn_out, "-o", formal_syn_in])
@@ -1290,6 +1308,7 @@ def build_airflow_dag(driver: HammerDriver, append_error_func: Callable[[str], N
         'power_par': Param(default=False, type='boolean', title='Power Place and Route'),
         'eco': Param(default=False, type='boolean', title='Functional ECO'),
         'eco_par': Param(default=False, type='boolean', title='ECO Place and Route'),
+        'timing_eco': Param(default=False, type='boolean', title='Run Timing ECO'),
         'reuse_upstream': Param(default=False, type='boolean', title='Reuse existing syn/par outputs',
                                 description='Syn and par that run only because a later stage (e.g. an ECO) needs them are not run: their last completed outputs are checked and reused as they are, without Hammer\\'s dependency check. Ticked stages still run.'),
         'pcb': Param(default=False, type='boolean', title='PCB Deliverables'),
@@ -1453,6 +1472,7 @@ def hammer_dag():
             
             s_to_par >> p_node
             p_node >> [p_to_sim, p_to_p, p_to_form, p_to_time, p_to_drc, p_to_lvs, p_to_eco]
+            p_node >> timing_eco(paths_dict['par_out'], paths_dict['timing_eco_run_dir'])
             p_to_sim >> s_par >> s_par_to_p
             [p_to_p, s_par_to_p] >> p_par
             p_to_form >> f_par
@@ -1498,6 +1518,7 @@ def hammer_dag():
         'timing_par_run_dir': os.path.join(OBJ_DIR, "timing-par-rundir"),
         'eco_run_dir': os.path.join(OBJ_DIR, "eco-rundir"),
         'eco_par_run_dir': os.path.join(OBJ_DIR, "eco-par-rundir"),
+        'timing_eco_run_dir': os.path.join(OBJ_DIR, "timing-eco-rundir"),
         'p_sim_rtl_in': PROJ_CONFIGS,
         'sim_rtl_out': os.path.join(os.path.join(OBJ_DIR, "sim-rtl-rundir"), "sim-output-full.json"),
         'power_sim_rtl_in': os.path.join(OBJ_DIR, "power-sim-rtl-input.json"),
@@ -1574,6 +1595,7 @@ def hammer_dag():
         'timing_par_run_dir': os.path.join(OBJ_DIR, "timing-par-{node}"),
         'eco_run_dir': os.path.join(OBJ_DIR, "eco-{node}"),
         'eco_par_run_dir': os.path.join(OBJ_DIR, "eco-par-{node}"),
+        'timing_eco_run_dir': os.path.join(OBJ_DIR, "timing-eco-{node}"),
         'p_sim_rtl_in': PROJ_CONFIGS,
         'sim_rtl_out': os.path.join(os.path.join(OBJ_DIR, "sim-rtl-{node}"), "sim-output-full.json"),
         'power_sim_rtl_in': os.path.join(OBJ_DIR, "power-sim-rtl-{node}-input.json"),

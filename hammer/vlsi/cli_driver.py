@@ -385,6 +385,8 @@ class CLIDriver:
             "eco-to-par": self.eco_to_par_action,
             "eco_par": self.eco_par_action,
             "eco-par": self.eco_par_action,
+            "timing_eco": self.timing_eco_action,
+            "timing-eco": self.timing_eco_action,
             "timing": self.timing_action,
             "synthesis_to_timing": self.synthesis_to_timing_action,
             "synthesis-to-timing": self.synthesis_to_timing_action,
@@ -528,6 +530,10 @@ class CLIDriver:
         Return a list of extra timing hooks in this project.
         To be overridden by subclasses.
         """
+        return list()
+
+    def get_extra_timing_eco_hooks(self) -> List[HammerToolHookAction]:
+        """Return a list of extra timing ECO hooks (e.g. technology-specific DRC repair). To be overridden by subclasses."""
         return list()
 
     def get_extra_pcb_hooks(self) -> List[HammerToolHookAction]:
@@ -1456,6 +1462,11 @@ class CLIDriver:
         if not success:
             driver.log.error("ECO place-and-route: the post-ECO netlist did not pass equivalence checking")
         return success
+
+    def timing_eco_action(self, driver: HammerDriver, append_error_func: Callable[[str], None]) -> Optional[dict]:
+        """Setup / hold repair of a par run's database in its own rundir (imported here: it imports hammer.vlsi)."""
+        from hammer.par.innovus.timing_eco import timing_eco_action
+        return timing_eco_action(self, driver)
 
     def eco_to_par_action(self, driver: HammerDriver, append_error_func: Callable[[str], None]) -> Optional[dict]:
         """Create a full config to run the output."""

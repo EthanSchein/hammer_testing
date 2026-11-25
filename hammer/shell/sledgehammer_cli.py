@@ -210,7 +210,7 @@ def _load_secrets() -> None:
 # The stage names the generated DAGs accept as trigger-conf booleans.
 _STAGES = ("sim_rtl", "power_rtl", "syn", "sim_syn", "timing_syn", "formal_syn",
            "power_syn", "par", "sim_par", "timing_par", "formal_par",
-           "power_par", "drc", "lvs", "eco", "eco_par", "pcb")
+           "power_par", "drc", "lvs", "eco", "eco_par", "timing_eco", "pcb")
 
 
 def _shown(task_id):
@@ -463,6 +463,15 @@ def _dag_has_eco_par(dag_file):
         return True
 
 
+def _dag_has_timing_eco(dag_file):
+    """True if the generated DAG has the timing_eco task (it knows the 'timing_eco' Param)."""
+    try:
+        with open(dag_file) as f:
+            return "'timing_eco': Param" in f.read()
+    except OSError:
+        return True
+
+
 def _dags_for_cwd(dags_folder, user):
     """[(design, obj_dir)] for registered DAGs that build under the cwd or were generated from it.
 
@@ -641,6 +650,9 @@ def _cmd_run(args) -> int:
                  f"nothing. Regenerate it first (sledgehammer buildfile).")
     if "eco_par" in actions and not _dag_has_eco_par(dag_file):
         sys.exit(f"[sledgehammer] {dag_file} predates the eco_par stage, so asking it for eco_par would run "
+                 f"nothing. Regenerate it first (sledgehammer buildfile).")
+    if "timing_eco" in actions and not _dag_has_timing_eco(dag_file):
+        sys.exit(f"[sledgehammer] {dag_file} predates the timing_eco stage, so asking it for timing_eco would run "
                  f"nothing. Regenerate it first (sledgehammer buildfile).")
 
     if not a.workspace:
