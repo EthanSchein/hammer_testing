@@ -90,14 +90,17 @@ class TestInnovusEcoCheck:
         names = [s.name for s in _innovus(tmp_path, eco=True).steps]
         assert names.index("eco_opt_design") < names.index("eco_check") < names.index("write_design")
 
-    def test_the_patch_cells_nets_are_checked_and_drc_reported(self, tmp_path) -> None:
+    def test_the_patch_cells_nets_are_checked(self, tmp_path) -> None:
         tool = _innovus(tmp_path, eco=True)
         for step in (tool.eco_restore_design, tool.eco_apply_patch, tool.eco_check):
             assert step()
         out = "\n".join(tool.output)
-        assert out.index("check_drc -out_file eco_drc_before.rpt") < out.index("eco_new_insts.txt w")
-        assert "check_connectivity -nets $_eco_nets -type regular -out_file eco_connectivity.rpt" in out
-        assert "check_drc -out_file eco_drc_after.rpt" in out
+        # the final verification lives in eco_lib.tcl: eco_check sources it and runs verify
+        assert out.index("::hammer_eco::baseline") < out.index("eco_new_insts.txt w") < out.index("::hammer_eco::verify")
+        lib = open(tool.eco_lib).read()
+        assert "check_connectivity -nets $affected -type regular -out_file eco_connectivity.rpt" in lib
+        # DRC is not part of eco_par's checks (it was only reported); sign-off DRC follows eco_par
+        assert "check_drc" not in out and "check_drc" not in lib
 
     def _finished(self, tmp_path, report: str = None, report_age: int = 200):
         """An eco_par run whose Innovus finished at t=200 after its script was written at t=100."""

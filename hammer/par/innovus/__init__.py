@@ -774,7 +774,14 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                 self.logger.error("The ECO cells' nets are not all connected and routed: "
                                   + ("; ".join(found) or "no report from this run") + f". See {report}.")
                 return False
-            self.logger.info(self.eco_drc_summary())
+            passed, summary = self.eco_verification()
+            if passed:
+                self.logger.info(summary)
+            elif self.get_setting("par.innovus.eco_fail_on_new_violations"):
+                self.logger.error(summary)
+                return False
+            else:
+                self.logger.warning(summary)
 
         if self.ran_write_ilm:
             # Check that the ILMs got written.
@@ -945,13 +952,20 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                     'puts {{ERROR: failed to load checkpoint pre_{step}}}; exit 2}}'.format(step=first_step.name))
         return True
 
+    # eco_par steps that directly follow one that leaves the design unchanged: their checkpoint is a link to that one's
+    ECO_UNCHANGED_AFTER = {"eco_apply_patch": "eco_restore_design", "write_regs": "eco_check", "write_design": "write_regs"}
+
     def do_between_steps(self, prev: HammerToolStep, next: HammerToolStep) -> bool:
         assert super().do_between_steps(prev, next)
         if self.use_python:
             self.py_append(f"write_db('pre_{next.name}')")
             self.py_append(f"os.system('ln -sfn pre_{next.name} latest')")
         else:
-            self.verbose_append("write_db pre_{step}".format(step=next.name))
+            if self.eco_script is not None and self.ECO_UNCHANGED_AFTER.get(next.name) == prev.name:
+                same = self.eco_base_db if prev.name == "eco_restore_design" else f"pre_{prev.name}"
+                self.verbose_append(f"ln -sfn {same} pre_{next.name}")
+            else:
+                self.verbose_append("write_db pre_{step}".format(step=next.name))
             self.verbose_append("ln -sfn pre_{step} latest".format(step=next.name))
         self._step_transitions = self._step_transitions + [(prev.name, next.name)]
         return True
@@ -1844,9 +1858,15 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             return False
         # on an error innovus drops to an interactive prompt instead of exiting
         self.append(f"if {{[catch {{read_db {db}}} err]}} {{puts $err; puts {{ERROR: failed to read {db}}}; exit 2}}")
-        # the DRC par left, for eco_check's report to set the ECO's against
-        self.verbose_append("check_drc -out_file eco_drc_before.rpt -limit 100000")
+        # baseline timing and max_transition / max_capacitance, which the ECO is checked against
+        self.append(f"source {self.eco_lib}")
+        self.append("::hammer_eco::baseline")
         return True
+
+    @property
+    def eco_lib(self) -> str:
+        """ Tcl helpers of the eco_par steps (baseline, targeted optimization, final verification) """
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "eco_lib.tcl")
 
     def eco_apply_patch(self) -> bool:
         """ Apply the mapped patch as netlist edits; its new cells come in unplaced """
@@ -1869,7 +1889,11 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
         fillers = [str(c) for cells in decaps[:1] + stdfillers[:1] for c in cells.name]
         if len(fillers) > 0:
             self.verbose_append("delete_filler -cells {{{cells}}} -prefix {{}}".format(cells=" ".join(fillers)))
-        self.verbose_append("place_eco")
+        if self.get_setting("par.innovus.eco_place_fix_existing"):
+            # every placed cell keeps its location and orientation (a DRC repair's mirrors included)
+            self.verbose_append("place_eco -fix_placed_insts true")
+        else:
+            self.verbose_append("place_eco")
         self.append('if {[llength [get_db insts -if {.place_status == unplaced}]]} '
                     '{puts {ERROR: place_eco left cells unplaced}; exit 2}')
         self.verbose_append("check_place eco_check_place.rpt")
@@ -1881,47 +1905,81 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
         return True
 
     def eco_opt_design(self) -> bool:
-        """ Post-route optimization for the timing the patch disturbed """
-        self.verbose_append("opt_design -post_route -setup -hold -expanded_views -timing_debug_report")
+        """
+        Post-route optimization for what the patch disturbed (par.innovus.eco_opt_mode):
+        full, the whole-design opt_design -post_route -setup -hold; targeted, post-ECO STA and
+        electrical checks, then opt_design only on what the ECO made fail; none.
+        """
+        mode = self.get_setting("par.innovus.eco_opt_mode")
+        if mode not in ("full", "targeted", "none"):
+            self.logger.error(f"par.innovus.eco_opt_mode {mode}: use full, targeted or none")
+            return False
+        self.append(f"source {self.eco_lib}")
+        if mode == "targeted":
+            passes = int(self.get_setting("par.innovus.eco_opt_max_drv_passes"))
+            if passes < 1:
+                self.logger.error("par.innovus.eco_opt_max_drv_passes must be at least 1")
+                return False
+            tol = float(self.get_setting("par.innovus.eco_opt_slack_tolerance"))
+            self.append(f"::hammer_eco::targeted {passes} {tol}")
+        elif mode == "full":
+            self.append("set _eco_before [::hammer_eco::snapshot]")
+            self.verbose_append("opt_design -post_route -setup -hold -expanded_views -timing_debug_report")
+            self.append("::hammer_eco::record full $_eco_before")
+        else:
+            self.append("::hammer_eco::record none")
         return True
 
     def eco_check(self) -> bool:
         """
-        Check every net on the patch's cells is connected and routed (fill_outputs fails the run
-        otherwise), and report DRC to set against eco_drc_before.rpt (reported, not enforced).
+        Final verification, whatever eco_opt_mode ran: connectivity of every ECO-affected net, and
+        setup / hold and max_transition / max_capacitance against the restored database.
         """
-        self.append('set _eco_f [open eco_new_insts.txt]; set _eco_names [read $_eco_f]; close $_eco_f')
-        self.append('set _eco_nets {}; foreach _n $_eco_names {foreach _i [get_db insts $_n] '
-                    '{lappend _eco_nets {*}[get_db $_i .pins.net.name]}}')
-        self.append('set _eco_nets [lsort -unique [lsearch -all -inline -not -exact $_eco_nets {}]]')
-        self.append('set _eco_f [open eco_nets.txt w]; puts $_eco_f [join $_eco_nets "\\n"]; close $_eco_f')
-        self.append('if {[llength $_eco_nets]} {check_connectivity -nets $_eco_nets -type regular -out_file eco_connectivity.rpt} '
-                    'else {set _eco_f [open eco_connectivity.rpt w]; '
-                    'puts $_eco_f {Found no problems or warnings (the patch added no cells).}; close $_eco_f}')
-        self.verbose_append("check_drc -out_file eco_drc_after.rpt -limit 100000")
+        self.append(f"source {self.eco_lib}")
+        tol = float(self.get_setting("par.innovus.eco_opt_slack_tolerance"))
+        self.append(f"::hammer_eco::verify {tol}")
         return True
 
-    def eco_drc_summary(self) -> str:
-        """ DRC after the ECO against the restored database's: how many are new, and how many of those on ECO nets """
-        def violations(name: str) -> Optional[set]:
+    def eco_verification(self) -> Tuple[bool, str]:
+        """
+        eco_check's final verification against the restored database: (passed, summary). It fails on
+        any max_transition / max_capacitance violation the ECO introduced or worsened, or a setup or
+        hold WNS below min(0, the restored database's) by more than par.innovus.eco_opt_slack_tolerance.
+        """
+        tol = float(self.get_setting("par.innovus.eco_opt_slack_tolerance"))
+
+        def timing(name: str) -> Optional[Dict[str, float]]:
             try:
-                with open(os.path.join(self.run_dir, name), errors="replace") as f:
-                    return set(re.findall(r"^([A-Z_]+: .*?)\nBounds : (\(.*?\) \(.*?\))", f.read(), re.M))
-            except OSError:
+                with open(os.path.join(self.run_dir, name)) as f:
+                    return {k: float(v) for k, v in (line.split() for line in f if len(line.split()) == 2)}
+            except (OSError, ValueError):
                 return None
-        before, after = violations("eco_drc_before.rpt"), violations("eco_drc_after.rpt")
-        if before is None or after is None:
-            return "DRC reports missing"
+        before, after = timing("eco_before_timing.txt"), timing("eco_after_timing.txt")
         try:
-            with open(os.path.join(self.run_dir, "eco_nets.txt")) as f:
-                eco_nets = set(f.read().split())
+            with open(os.path.join(self.run_dir, "eco_new_violations.txt")) as f:
+                drv = [line.split() for line in f if line.strip()]
         except OSError:
-            eco_nets = set()
-        new = after - before
-        on_eco = [v for v in new if any(f"Net {n} " in v[0] or v[0].endswith(f"Net {n}") for n in eco_nets)]
-        return (f"DRC: {len(before)} violations in the restored par database, {len(after)} after the ECO; "
-                f"{len(new)} not in the restored database, {len(on_eco)} of them on nets of the ECO cells "
-                f"(eco_drc_before.rpt, eco_drc_after.rpt)")
+            drv = None
+        if before is None or after is None or drv is None:
+            return False, "final verification reports missing (eco_before_timing.txt, eco_after_timing.txt, eco_new_violations.txt)"
+        problems = []
+        for kind in ("setup", "hold"):
+            if after[kind] < min(0.0, before[kind]) - tol:
+                problems.append(f"{kind} WNS {after[kind]} ns (restored database {before[kind]} ns)")
+        kinds = {"maxtran": "max_transition", "maxcap": "max_capacitance"}
+        for k, name in kinds.items():
+            pins = [p for kind, p in drv if kind == k]
+            if pins:
+                problems.append(f"{len(pins)} {name} violations introduced or worsened by the ECO (e.g. {pins[0]})")
+        summary = (f"final verification ({self.get_setting('par.innovus.eco_opt_mode')} optimization): setup WNS {after['setup']} ns, hold WNS "
+                   f"{after['hold']} ns (restored database {before['setup']} / {before['hold']} ns); "
+                   + ("; ".join(problems) if problems else "no timing or max_transition / max_capacitance violation beyond the restored database's")
+                   + " (eco_verification.rpt)")
+        with open(os.path.join(self.run_dir, "eco_verification.rpt"), "w") as f:
+            f.write(("PASS" if not problems else "FAIL") + ": " + summary + "\n")
+            for kind, p in drv:
+                f.write(f"{kinds.get(kind, kind)} {p}\n")
+        return not problems, summary
 
     def write_netlist(self) -> bool:
         pcells = self.get_physical_only_cells()

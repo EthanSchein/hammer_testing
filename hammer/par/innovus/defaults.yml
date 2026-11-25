@@ -51,3 +51,23 @@ par.innovus:
   # Should only be run at the very end, as runtime impact is significant.
   # Requires the same version of Tempus to be installed at ${cadence.cadence_home}/SSV/SSV${par.innovus.bin}/bin
   signoff: false
+
+  # ---- eco_par: post-route optimization after a functional ECO (see eco_lib.tcl) ----
+  # full: whole-design opt_design -post_route -setup -hold (original behavior).
+  # targeted: opt_design -drv only on the nets of max_transition / max_capacitance violations the ECO
+  #   introduced or worsened; falls back to the full command if the ECO broke setup or hold.
+  # none: no optimization.
+  # Every mode ends with the same check against the restored database (eco_verification.rpt).
+  eco_opt_mode: full
+  # targeted: maximum opt_design -drv passes.
+  # type: int
+  eco_opt_max_drv_passes: 2
+  # Slack (ns) a check may lose against the restored database before it counts as made worse.
+  # type: float
+  eco_opt_slack_tolerance: 0.01
+  # place_eco -fix_placed_insts true: existing cells keep their location and orientation.
+  # type: bool
+  eco_place_fix_existing: false
+  # Fail eco_par when the final check finds violations the ECO introduced (false: report only).
+  # type: bool
+  eco_fail_on_new_violations: false
