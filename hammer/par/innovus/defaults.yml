@@ -52,40 +52,22 @@ par.innovus:
   # Requires the same version of Tempus to be installed at ${cadence.cadence_home}/SSV/SSV${par.innovus.bin}/bin
   signoff: false
 
-  # ---- eco_par: incremental place and route of a functional ECO ----
-  # Post-route optimization after the ECO is placed and routed.
-  # Valid options:
-  # - full: whole-design opt_design -post_route -setup -hold (the original behavior; the fallback).
-  # - targeted: post-ECO STA and electrical checks first, against the restored database. When the ECO
-  #   broke setup or hold, the full mode's whole-design optimization, then one DRV pass for what it left;
-  #   otherwise opt_design -post_route -drv only on the nets whose max_transition / max_capacitance
-  #   violations the ECO introduced (not in the restored database) or worsened on an ECO-affected net,
-  #   then setup / hold optimization only if those passes broke timing. See eco_lib.tcl beside this file.
-  # - none: no optimization.
-  # eco_check runs the same final verification after every mode (setup/hold timing, max_transition /
-  # max_capacitance against the restored database, connectivity, DRC), and Conformal follows eco_par.
+  # ---- eco_par: post-route optimization after a functional ECO (see eco_lib.tcl) ----
+  # full: whole-design opt_design -post_route -setup -hold (original behavior).
+  # targeted: opt_design -drv only on the nets of max_transition / max_capacitance violations the ECO
+  #   introduced or worsened; falls back to the full command if the ECO broke setup or hold.
+  # none: no optimization.
+  # Every mode ends with the same check against the restored database (eco_verification.rpt).
   eco_opt_mode: full
-  # targeted: the most opt_design -drv passes. A pass after the first runs only when ECO-caused
-  # violations remain (unresolved, or new ones the previous pass's own buffering or rerouting made),
-  # and only when they differ from the set the previous pass already targeted.
+  # targeted: maximum opt_design -drv passes.
   # type: int
   eco_opt_max_drv_passes: 2
-  # Slack (ns) a timing or max_transition / max_capacitance number may lose against the restored
-  # database before it counts as made worse by the ECO (targeted decisions and the final verification).
+  # Slack (ns) a check may lose against the restored database before it counts as made worse.
   # type: float
   eco_opt_slack_tolerance: 0.01
-  # eco_place: place_eco -fix_placed_insts true, so every cell already placed keeps its location and
-  # orientation (including cells a DRC repair mirrored). false: the stock place_eco, which may move or
-  # re-orient existing cells to legalize the new ones.
+  # place_eco -fix_placed_insts true: existing cells keep their location and orientation.
   # type: bool
   eco_place_fix_existing: false
-  # eco_par: fail the run when the final verification finds the ECO introduced violations (new or
-  # worsened max_transition / max_capacitance pins, or setup / hold worse than the restored database).
-  # false reports them (eco_verification.rpt and the log) without failing.
+  # Fail eco_par when the final check finds violations the ECO introduced (false: report only).
   # type: bool
   eco_fail_on_new_violations: false
-  # eco_par: skip the checkpoints that duplicate another one (pre_eco_apply_patch is the database
-  # eco_restore_design read; pre_write_regs and pre_write_design are pre_eco_check after read-only
-  # checks). Each becomes a link to the database it duplicates, so --from_step still resumes at every step.
-  # type: bool
-  eco_dedupe_checkpoints: false

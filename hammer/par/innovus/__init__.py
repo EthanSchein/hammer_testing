@@ -774,7 +774,6 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                 self.logger.error("The ECO cells' nets are not all connected and routed: "
                                   + ("; ".join(found) or "no report from this run") + f". See {report}.")
                 return False
-            self.logger.info(self.eco_drc_summary())
             passed, summary = self.eco_verification()
             if passed:
                 self.logger.info(summary)
@@ -953,35 +952,20 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
                     'puts {{ERROR: failed to load checkpoint pre_{step}}}; exit 2}}'.format(step=first_step.name))
         return True
 
-    # eco_par checkpoints that would duplicate a database already on disk (par.innovus.eco_dedupe_checkpoints):
-    # pre_<step> for each step here, when the step before it is the one named, which only reads or checks
-    # the design. Each becomes a link to the database it equals, so --from_step still resumes at every step.
-    ECO_DUPLICATE_CHECKPOINTS = {"eco_apply_patch": "eco_restore_design", "write_regs": "eco_check",
-                                 "write_design": "write_regs"}
-
-    def eco_checkpoint_link(self, prev_step: str, next_step: str) -> Optional[str]:
-        """ The database pre_<next_step> would duplicate, when eco_par links instead of writing it; else None """
-        if self.use_python or self.eco_script is None or not self.get_setting("par.innovus.eco_dedupe_checkpoints"):
-            return None
-        if self.ECO_DUPLICATE_CHECKPOINTS.get(next_step) != prev_step:
-            return None
-        # eco_restore_design read the patched par run's database; the others only checked or wrote files
-        return self.eco_base_db if prev_step == "eco_restore_design" else f"pre_{prev_step}"
+    # eco_par steps that directly follow one that leaves the design unchanged: their checkpoint is a link to that one's
+    ECO_UNCHANGED_AFTER = {"eco_apply_patch": "eco_restore_design", "write_regs": "eco_check", "write_design": "write_regs"}
 
     def do_between_steps(self, prev: HammerToolStep, next: HammerToolStep) -> bool:
         assert super().do_between_steps(prev, next)
-        link = self.eco_checkpoint_link(prev.name, next.name)
-        if link is not None:
-            # the design is the one in {link}: link to it instead of writing a copy
-            self.verbose_append("ln -sfn {link} pre_{step}".format(link=link, step=next.name))
-            self.verbose_append("ln -sfn pre_{step} latest".format(step=next.name))
-            self._step_transitions = self._step_transitions + [(prev.name, next.name)]
-            return True
         if self.use_python:
             self.py_append(f"write_db('pre_{next.name}')")
             self.py_append(f"os.system('ln -sfn pre_{next.name} latest')")
         else:
-            self.verbose_append("write_db pre_{step}".format(step=next.name))
+            if self.eco_script is not None and self.ECO_UNCHANGED_AFTER.get(next.name) == prev.name:
+                same = self.eco_base_db if prev.name == "eco_restore_design" else f"pre_{prev.name}"
+                self.verbose_append(f"ln -sfn {same} pre_{next.name}")
+            else:
+                self.verbose_append("write_db pre_{step}".format(step=next.name))
             self.verbose_append("ln -sfn pre_{step} latest".format(step=next.name))
         self._step_transitions = self._step_transitions + [(prev.name, next.name)]
         return True
@@ -1874,10 +1858,7 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             return False
         # on an error innovus drops to an interactive prompt instead of exiting
         self.append(f"if {{[catch {{read_db {db}}} err]}} {{puts $err; puts {{ERROR: failed to read {db}}}; exit 2}}")
-        # the DRC par left, for eco_check's report to set the ECO's against
-        self.verbose_append("check_drc -out_file eco_drc_before.rpt -limit 100000")
-        # the timing and max_transition / max_capacitance par left: the baseline the targeted
-        # optimization and eco_check's final verification set the ECO against
+        # baseline timing and max_transition / max_capacitance, which the ECO is checked against
         self.append(f"source {self.eco_lib}")
         self.append("::hammer_eco::baseline")
         return True
@@ -1886,13 +1867,6 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
     def eco_lib(self) -> str:
         """ Tcl helpers of the eco_par steps (baseline, targeted optimization, final verification) """
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "eco_lib.tcl")
-
-    @property
-    def eco_opt_mode(self) -> str:
-        mode = str(self.get_setting("par.innovus.eco_opt_mode"))
-        if mode not in ("full", "targeted", "none"):
-            raise ValueError(f"par.innovus.eco_opt_mode {mode}: use full, targeted or none")
-        return mode
 
     def eco_apply_patch(self) -> bool:
         """ Apply the mapped patch as netlist edits; its new cells come in unplaced """
@@ -1936,10 +1910,9 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
         full, the whole-design opt_design -post_route -setup -hold; targeted, post-ECO STA and
         electrical checks, then opt_design only on what the ECO made fail; none.
         """
-        try:
-            mode = self.eco_opt_mode
-        except ValueError as e:
-            self.logger.error(str(e))
+        mode = self.get_setting("par.innovus.eco_opt_mode")
+        if mode not in ("full", "targeted", "none"):
+            self.logger.error(f"par.innovus.eco_opt_mode {mode}: use full, targeted or none")
             return False
         self.append(f"source {self.eco_lib}")
         if mode == "targeted":
@@ -1959,14 +1932,10 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
 
     def eco_check(self) -> bool:
         """
-        Final verification, whatever eco_opt_mode ran: every ECO-affected net (on the patch's cells,
-        or on a cell the optimization added or resized) is connected and routed (fill_outputs fails
-        the run otherwise); DRC to set against eco_drc_before.rpt; setup / hold timing and
-        max_transition / max_capacitance to set against the restored database's (eco_verification.rpt).
+        Final verification, whatever eco_opt_mode ran: connectivity of every ECO-affected net, and
+        setup / hold and max_transition / max_capacitance against the restored database.
         """
         self.append(f"source {self.eco_lib}")
-        # eco_nets.txt: the nets on the patch's cells, as before (eco_drc_summary)
-        self.append('::hammer_eco::write_list eco_nets.txt [::hammer_eco::eco_nets]')
         tol = float(self.get_setting("par.innovus.eco_opt_slack_tolerance"))
         self.append(f"::hammer_eco::verify {tol}")
         return True
@@ -2002,7 +1971,7 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             pins = [p for kind, p in drv if kind == k]
             if pins:
                 problems.append(f"{len(pins)} {name} violations introduced or worsened by the ECO (e.g. {pins[0]})")
-        summary = (f"final verification ({self.eco_opt_mode} optimization): setup WNS {after['setup']} ns, hold WNS "
+        summary = (f"final verification ({self.get_setting('par.innovus.eco_opt_mode')} optimization): setup WNS {after['setup']} ns, hold WNS "
                    f"{after['hold']} ns (restored database {before['setup']} / {before['hold']} ns); "
                    + ("; ".join(problems) if problems else "no timing or max_transition / max_capacitance violation beyond the restored database's")
                    + " (eco_verification.rpt)")
@@ -2011,28 +1980,6 @@ class Innovus(HammerPlaceAndRouteTool, CadenceTool):
             for kind, p in drv:
                 f.write(f"{kinds.get(kind, kind)} {p}\n")
         return not problems, summary
-
-    def eco_drc_summary(self) -> str:
-        """ DRC after the ECO against the restored database's: how many are new, and how many of those on ECO nets """
-        def violations(name: str) -> Optional[set]:
-            try:
-                with open(os.path.join(self.run_dir, name), errors="replace") as f:
-                    return set(re.findall(r"^([A-Z_]+: .*?)\nBounds : (\(.*?\) \(.*?\))", f.read(), re.M))
-            except OSError:
-                return None
-        before, after = violations("eco_drc_before.rpt"), violations("eco_drc_after.rpt")
-        if before is None or after is None:
-            return "DRC reports missing"
-        try:
-            with open(os.path.join(self.run_dir, "eco_nets.txt")) as f:
-                eco_nets = set(f.read().split())
-        except OSError:
-            eco_nets = set()
-        new = after - before
-        on_eco = [v for v in new if any(f"Net {n} " in v[0] or v[0].endswith(f"Net {n}") for n in eco_nets)]
-        return (f"DRC: {len(before)} violations in the restored par database, {len(after)} after the ECO; "
-                f"{len(new)} not in the restored database, {len(on_eco)} of them on nets of the ECO cells "
-                f"(eco_drc_before.rpt, eco_drc_after.rpt)")
 
     def write_netlist(self) -> bool:
         pcells = self.get_physical_only_cells()
